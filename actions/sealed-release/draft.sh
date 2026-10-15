@@ -23,7 +23,7 @@ case "$(jq length <<< "$existing")" in
     echo "draft: reusing draft $id for $TAG at $TARGET"
     ;;
   *)
-    fail "several releases carry $TAG; delete the stale drafts by hand: $(jq -c . <<< "$existing")"
+    fail "several releases carry $TAG; delete the stale drafts (gh api -X DELETE repos/$GH_REPO/releases/<id>): $(jq -c . <<< "$existing")"
     ;;
 esac
 echo "release-id=$id" >> "$GITHUB_OUTPUT"

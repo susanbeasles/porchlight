@@ -153,5 +153,38 @@ synthesize their own fixtures in a temporary directory.
 
 ## CI
 
-`docs/ci/rust.yml` is the GitHub Actions workflow for this milestone. Workflow files are a
-human-owned path in this repository; copy it to `.github/workflows/rust.yml` when merging M1.
+| Workflow | Runs | Does |
+|---|---|---|
+| `.github/workflows/rust.yml` | every PR, push to `main` | `scripts/check` on Linux: fmt, clippy, tests, no-network, the release-chain tests |
+| `.github/workflows/agent-guard.yml` | every PR, push to `main` | guard validation, hidden-Unicode scan, secret scan |
+| `.github/workflows/release.yml` | push to `main` | npm release chain; stops at a read-only gate until `release/npm.json` is enabled (ADR-0008) |
+| `.github/workflows/deploy.yml` | dispatched by `release.yml` | publishes a sealed release to npm (ADR-0008) |
+
+`.github/workflows/` is a protected path. Agents still maintain it. An agent writes there
+only when the owner has directed that change in the session, and the write goes through an
+approval prompt. CI on the PR then proves the change.
+
+## Who does what
+
+Agents do the work end to end:
+
+- code, tests, docs and ADRs;
+- branches, commits, pushes and PRs;
+- CI fixes and review responses;
+- release activation;
+- reading acceptance output and judging it against SPEC §9.
+
+The owner gives direction and approves. A step is the owner's only when no agent can hold the
+authority it needs:
+
+| Step | Why no agent can do it | What the agent does around it |
+|---|---|---|
+| Merge a milestone PR | Repository rule: the human merges M(n) before M(n+1) starts | Drives the PR to green and mergeable, then says it is ready |
+| Grant the terminal Full Disk Access for `scripts/accept-m2` | macOS TCC grants are made by a person in System Settings; nothing can grant them programmatically | The script fails fast and names the app. The agent reads the output and judges acceptance |
+| Type the sudo password for `eslogger` | Repository policy denies agents `sudo` | Builds everything beforehand, so the password is the only prompt |
+| Configure the npm trusted publisher | Bound to the owner's npm account and 2FA | States the exact values, then verifies them on the first deploy |
+| Apple entitlement and provisioning | Bound to the Apple Developer account | Keeps the build passing with `--no-sign` until they arrive |
+| Repository admin settings (the `npm` environment, release immutability) | Need admin permission, which the agent's GitHub App may not have | Attempts them through the API first; on refusal, reports the exact error and setting |
+
+Anything not in this table is an agent's job. A doc that tells the owner to copy, apply or
+run something outside this table is a bug.
