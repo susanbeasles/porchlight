@@ -35,6 +35,9 @@ it and are not obvious from the code.
    executable before Xcode's CodeSign step. Cargo never runs inside Xcode (ADR-0001
    decision 5). The first macOS build showed why: a compiled placeholder and the copy step
    both produced the same file, which Xcode rejects.
+   The app embeds the extension with Xcode's native System Extensions copy phase, which
+   also code-signs it on copy; a `ditto` script could not read the bundle under the
+   user-script sandbox, and disabling that sandbox was not worth it.
 8. **The app is not sandboxed in M2.** The store lives at
    `~/Library/Application Support/dev.susanb.porchlight/events.db`, directory mode 0700.
    Sandboxing interacts with the privileged XPC connection and with M7 self-protection
