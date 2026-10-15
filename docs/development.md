@@ -96,14 +96,23 @@ Logs: `log stream --predicate 'subsystem == "dev.susanb.porchlight.extension"'`.
 SPEC §9: after 60 seconds, `ps` and the process graph agree on running processes.
 
 **Now, with SIP on, through `eslogger`.** Apple's `eslogger` produces the same exec, fork and
-exit stream the extension does; it needs Full Disk Access for the terminal only.
+exit stream the extension does. macOS attributes its ES client to the app that launched
+the shell, so that app needs Full Disk Access, or `eslogger` fails with
+`ES_NEW_CLIENT_RESULT_ERR_NOT_PERMITTED`:
+
+1. System Settings → Privacy & Security → Full Disk Access → enable your terminal app.
+2. Quit the app completely and reopen it. TCC applies at launch, so a new tab or window is
+   not enough. In tmux, start a new tmux server from the reopened app.
+3. Turn the grant off when acceptance is done. Full Disk Access is broad. If you prefer, grant
+   it only to a terminal you use just for this, such as Terminal.app, and keep your everyday
+   terminal without it.
 
 ```sh
 scripts/accept-m2          # 60 seconds; pass a number for longer
 ```
 
 It builds `plctl` first so nothing compiles during the measurement, asks for sudo up
-front, records, snapshots `ps` the instant recording stops, drops a partial last line,
+front, records (failing at once, with the app to grant, if `eslogger` stops early), snapshots `ps` the instant recording stops, drops a partial last line,
 replays into a throwaway store, and prints the comparison. The trace contains every
 command line on the machine for that window, so it is kept in a private 0700 directory and
 deleted on exit. Only the JSON report is printed.
