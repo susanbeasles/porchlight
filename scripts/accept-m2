@@ -61,8 +61,12 @@ while (( SECONDS - start < secs )); do
   fi
   sleep 1
 done
-# Stop first, then snapshot ps immediately: the window closes at the same instant on both
-# sides. sudo relays the signal to eslogger.
+# Snapshot ps just before and just after stopping. A process that exits between the stop and
+# the second snapshot is still in the first; one that starts after the first (the sudo kill
+# below) is reported as unverifiable rather than missing (ADR-0009). The timestamp is taken
+# before the snapshot so it never postdates it. sudo relays the signal to eslogger.
+before_at=$(date +%s)
+ps -axo pid=,etime= > "$work/ps-before.txt"
 sudo kill -TERM "$rec" 2>/dev/null || true
 wait "$rec" 2>/dev/null || true
 ps -axo pid=,etime= > "$work/ps.txt"
@@ -77,4 +81,5 @@ head -n "$lines" "$work/raw.ndjson" > "$work/m2.ndjson"
 echo "== recorded $lines events"
 
 "$plctl" replay "$work/m2.ndjson" --db "$work/m2.db" --strict
-"$plctl" processes --db "$work/m2.db" --ps-file "$work/ps.txt" --window-secs "$secs"
+"$plctl" processes --db "$work/m2.db" --ps-file "$work/ps.txt" --window-secs "$secs" \
+  --ps-before "$work/ps-before.txt" --ps-before-at "$before_at"
