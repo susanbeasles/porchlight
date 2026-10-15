@@ -66,10 +66,11 @@ porchlight/
 ├── Cargo.toml                          # Workspace; exact-version pins; shared profiles
 ├── Cargo.lock                          # Committed; checksums are the pin (C8)
 ├── rust-toolchain.toml                 # Pinned toolchain
-├── crates/
-│   ├── porchlight-core/                # Pure Rust, std only. Builds and tests on Linux.
+├── crates/                             # Crate names use the short prefix `pl-` (ADR-0005)
+│   ├── pl-core/                        # Pure Rust, std only. Builds and tests on Linux.
 │   │   └── src/
 │   │       ├── schema/                 # Event, ProcessIdentity, Finding; serde; versioned
+│   │       ├── live.rs                 # M2 live-process set; replaced by graph/ in M4
 │   │       ├── graph/                  # ProcessGraph, IPCGraph
 │   │       ├── inventory/              # PersistenceInventory
 │   │       ├── crossview/              # CrossViewChecker over enumerator traits
@@ -77,25 +78,27 @@ porchlight/
 │   │       ├── store/                  # EventStore (rusqlite on system SQLite), migrations
 │   │       └── pipeline/               # ingest → normalize → graph/inventory/rules → findings
 │   │                                   # features: schema (default), store, rules, pipeline
-│   ├── porchlight-raw/                 # rawevent.h + #[repr(C)] mirror, ring.c, layout tests
-│   │                                   # No ES dependency; builds and tests on Linux
-│   ├── porchlight-es/                  # Extension executable. macOS only.
-│   │   ├── csrc/es_shim.c              # es_new_client, subscriptions, muting, handler, AUTH
-│   │   ├── csrc/xpc_shim.c             # The two block-taking libxpc calls
-│   │   ├── csrc/log_shim.c             # os_log wrapper
-│   │   └── src/                        # main, bridge, xpc_service, self_protection
-│   ├── porchlight-sys-macos/           # libproc/csops seeding; launchctl, sfltool, profiles
+│   ├── pl-raw/                         # rawevent.h + #[repr(C)] mirror, ring.c, decode,
+│   │                                   # bridge logic, XPC protocol. Builds and tests on Linux
+│   ├── pl-xpc/                         # xpc_shim.c (block-taking libxpc calls) + owned
+│   │                                   # connections in Rust. macOS only
+│   ├── pl-es/                          # Extension executable. macOS only.
+│   │   ├── csrc/es_copy.c              # es_message_t → PLRawEvent, the handler's copy
+│   │   ├── csrc/es_shim.c              # es_new_client, muting, subscriptions, handler, os_log
+│   │   ├── csrc/es_selftest.c          # Copy tests against hand-built es_message_t
+│   │   └── src/                        # main (ring, bridge thread), service (XPC peers)
+│   ├── pl-sys-macos/                   # libproc/csops seeding; launchctl, sfltool, profiles
 │   │                                   # parsers; TCC.db metadata. Implements core traits
-│   ├── porchlight-ffi/                 # staticlib + include/porchlight.h for the app
-│   └── porchlightctl/                  # CLI: record (macOS only), replay, dump, verify-db, rules
+│   ├── pl-ffi/                         # staticlib + include/pl.h for the app; XPC client
+│   └── plctl/                          # CLI: record, replay, dump, verify-db, processes, rules
 ├── apple/
-│   ├── Porchlight.xcodeproj            # App and extension bundle targets; bundling and signing
+│   ├── project.yml                     # XcodeGen spec; Porchlight.xcodeproj is generated
 │   ├── PorchlightApp/                  # SwiftUI container app (the only Swift target)
 │   │   ├── ExtensionManager.swift      # OSSystemExtensionRequest activation, status
-│   │   ├── CoreBridge.swift            # Calls porchlight-ffi; JSON in, JSON out
+│   │   ├── CoreBridge.swift            # Calls pl-ffi; JSON in, JSON out
 │   │   ├── Timeline/                   # Minimal UI
 │   │   └── Settings/
-│   ├── PorchlightExtension/            # Info.plist, entitlements, placeholder main.c; the
+│   ├── PorchlightExtension/            # Info.plist, entitlements, placeholder.c; the
 │   │                                   # executable is replaced by the cargo build before signing
 │   └── PorchlightNE/                   # Reserved. Info.plist only.
 ├── Rules/                              # Rule corpus (YAML), ATT&CK mapping JSON
@@ -106,13 +109,15 @@ porchlight/
 │   └── adr/                            # Architecture decision records
 └── scripts/
     ├── check                           # fmt, clippy, test, no-network: the one entrypoint
+    ├── build-apple                     # cargo, then XcodeGen, then xcodebuild (macOS)
+    ├── spike-arm64e                    # Enhanced Security evidence for ADR-0006 (macOS)
     ├── record-fixture.sh               # Wraps eslogger with Porchlight's event set
     └── check-no-network.sh             # C1: source grep + cargo tree deny-list
 ```
 
 Tests live beside each crate (`crates/*/tests/` and `#[cfg(test)]` modules). Golden replay
-tests live in `crates/porchlightctl/tests/`. Extension handler tests against hand-built
-`es_message_t` structs live in `crates/porchlight-es/tests/` and run only on macOS.
+tests live in `crates/plctl/tests/`. Extension copy tests against hand-built
+`es_message_t` structs live in `crates/pl-es` and run only on macOS.
 
 Bundle identifiers (already registered, Team ID `2VB7966G7R`):
 
@@ -124,7 +129,7 @@ Bundle identifiers (already registered, Team ID `2VB7966G7R`):
 
 ## 3. Event schema
 
-`porchlight-core::schema` is the single contract between every component. It is versioned
+`pl-core::schema` is the single contract between every component. It is versioned
 (`schema_version: u32`), implements serde `Serialize` and `Deserialize`, and serializes to
 JSON (fixtures, debugging, XPC) and the SQLite store. All timestamps are `u64` nanoseconds
 since boot (`mach_continuous_time` domain) **and** wall-clock time as `i64` nanoseconds since
@@ -133,7 +138,7 @@ never serialized as a float or a formatted string.
 
 The type sketches in §3.1 to §3.4 keep the original Swift-style notation. They are semantic
 contracts, not source. The normative definitions are the Rust types in
-`porchlight-core::schema`. Mapping: `UInt64` is `u64`, `Int32` is `i32`, `Date` is wall-clock
+`pl-core::schema`. Mapping: `UInt64` is `u64`, `Int32` is `i32`, `Date` is wall-clock
 `i64` nanoseconds, `Codable` is serde, `Hashable` is `Hash + Eq`, and field names are
 `snake_case` in Rust and in JSON. Any map that reaches serialization or an ordered output is a
 `BTreeMap` or is explicitly sorted; hash-map iteration order never reaches output (C7).
@@ -418,15 +423,17 @@ Fixed layout, ~20 KiB, no pointers to message memory. Fields: event type, mach t
 seq/global seq, both audit tokens (+responsible), exec path, signing ID, team ID, cdhash,
 flags (platform binary, ES client, truncation bits), tty path, and a type-specific union
 sized for the largest member (exec with args/env). Document the layout in
-`docs/schema.md`; it is the second fixture format, recorded by `porchlightctl` as NDJSON of
+`docs/schema.md`; it is the second fixture format, recorded by `plctl` as NDJSON of
 the decoded struct from M3 onward (ADR-0002). The struct is defined once in C (`rawevent.h`)
 and mirrored as a `#[repr(C)]` Rust struct; both sides carry static size and offset
 assertions so layout drift fails the build.
 
 ### 4.6 Ring buffer and bridge
 
-- SPSC ring, capacity 65 536 slots, allocated once at start (~1.3 GB virtual; physical
-  pages touched on demand; document the trade-off and make capacity a build-time constant).
+- SPSC ring, capacity a build-time constant (`pl_raw::RING_CAPACITY`), allocated once at
+  start (slots × 21,688 bytes virtual; physical pages touched on demand). M2 uses 8,192
+  slots (~178 MB virtual) as an interim value; the final value and its trade-off are an
+  M3 ADR (§12).
 - Consumer thread (`bridge.rs`) drains in batches, converts to `Event`, assigns nothing
   (ids are assigned by the app-side Pipeline), serializes as JSON (`serde_json`, the same
   encoding as fixtures), and sends over XPC to the app in batches of ≤ 512 events or every
@@ -437,7 +444,8 @@ assertions so layout drift fails the build.
 
 ### 4.7 XPC
 
-XPC listener in the extension, Mach service name `dev.susanb.porchlight.extension.xpc`,
+XPC listener in the extension, Mach service name `2VB7966G7R.dev.susanb.porchlight.extension.xpc`
+(system extensions must prefix the name with the Team ID; ADR-0005),
 declared in the extension's `Info.plist` and created with
 `xpc_connection_create_mach_service` (libxpc, not NSXPC). Each peer connection is accepted
 only after `xpc_connection_set_peer_code_signing_requirement` succeeds with a requirement on
@@ -447,7 +455,7 @@ for the extension's identifier when it connects. Messages are `xpc_dictionary` o
 
 | Direction | `op` | Payload keys |
 |---|---|---|
-| app → extension | `status` | none; the reply carries `status: data` (JSON `ESStatus`) |
+| app → extension | `status` | none; the extension answers with `status_changed` to that peer |
 | app → extension | `start_streaming` | `watch_list_version: int64` |
 | app → extension | `stop_streaming` | none |
 | app → extension | `update_watch_list` | `paths: array<string>`, `version: int64` |
@@ -477,8 +485,8 @@ replacing it.
 
 ## 5. Pipeline (app side)
 
-`Pipeline` is a pure, single-threaded type in `porchlight-core`, embedded in the app through
-the `porchlight-ffi` C ABI. Input: `Vec<Event>` from XPC or from a fixture. Output: writes
+`Pipeline` is a pure, single-threaded type in `pl-core`, embedded in the app through
+the `pl-ffi` C ABI. Input: `Vec<Event>` from XPC or from a fixture. Output: writes
 to `EventStore`, updates to `ProcessGraph`, `IPCGraph`, `PersistenceInventory`, and emits
 `Finding`s via `RuleEngine`.
 
@@ -503,8 +511,8 @@ ingest(batch)
   persisted.
 - At startup, the app seeds the graph from `proc_listpids` + `proc_pidinfo` + `csops` for
   every running process so lineage is not blind to pre-start processes. Seeded nodes are
-  flagged `seeded: true`. Enumeration is a trait in `porchlight-core` implemented by
-  `porchlight-sys-macos`, so seeding logic is tested with recorded enumeration fixtures.
+  flagged `seeded: true`. Enumeration is a trait in `pl-core` implemented by
+  `pl-sys-macos`, so seeding logic is tested with recorded enumeration fixtures.
 - Query API: ancestors, descendants, siblings by `signingID`, "has this `signingID` ever
   had a parent with `signingID` X" (needed by rules).
 
@@ -548,8 +556,8 @@ file was in a temp directory, or if the mismatch resolves on the next check. Per
 mismatches that survive two consecutive checks as events; those are rule inputs.
 
 Enumeration (process list, `launchctl print`, directory listings, `sfltool dumpbtm`) is
-behind traits implemented in `porchlight-sys-macos`. The comparison logic lives in
-`porchlight-core` and is tested on Linux with recorded enumeration output.
+behind traits implemented in `pl-sys-macos`. The comparison logic lives in
+`pl-core` and is tested on Linux with recorded enumeration output.
 
 ### 5.5 RuleEngine
 
@@ -585,7 +593,7 @@ behind traits implemented in `porchlight-sys-macos`. The comparison logic lives 
   Retention is user-configurable; purge runs daily.
 - The database file is protected by self-protection paths and `chflags uchg` is **not**
   used (SQLite needs to write).
-- Export: `porchlightctl dump --from --to --format ndjson` for support and for building
+- Export: `plctl dump --from --to --format ndjson` for support and for building
   training corpora later. Export is explicit and user-initiated only.
 
 ---
@@ -606,14 +614,14 @@ Activation flow uses `OSSystemExtensionRequest.activationRequest`; the app expla
 system prompt before it appears (extension approval, then Full Disk Access) with a
 screenshot-free, plain-language page and a "open System Settings to the right pane" button.
 
-The app is the only Swift target. It links `libporchlight_ffi.a` and exchanges JSON with
+The app is the only Swift target. It links `libpl_ffi.a` and exchanges JSON with
 it. It contains no detection logic.
 
 No menu-bar agent in v0. No notifications in v0.
 
 ---
 
-## 7. `porchlightctl`
+## 7. `plctl`
 
 CLI in the same repo, for developers:
 
@@ -622,12 +630,12 @@ CLI in the same repo, for developers:
 - `replay fixture.ndjson [--rules Rules/] [--out findings.json]` — runs the full Pipeline
   headlessly against the fixture, prints findings and graph stats. **This is the primary
   development loop.** The ES extension is not needed to iterate on anything in
-  `porchlight-core`. Accepts `eslogger` NDJSON (from M1) and Porchlight raw-event NDJSON
+  `pl-core`. Accepts `eslogger` NDJSON (from M1) and Porchlight raw-event NDJSON
   (from M3), detected from the first line (ADR-0002).
 - `dump`, `verify-db`, `rules lint`, `rules test` (runs each rule's embedded positive and
   negative fixture snippets).
 
-`porchlightctl` builds and runs on Linux as well as macOS. `record` is macOS-only.
+`plctl` builds and runs on Linux as well as macOS. `record` is macOS-only.
 
 ---
 
@@ -646,7 +654,7 @@ CLI in the same repo, for developers:
   LaunchAgent install via `osascript`, a session with `curl | sh`, a session with an SSH
   key added, a session with simulated hidden-process mismatch, a session with sequence gaps.
 - Rule tests: every rule file carries `tests: {positive: [...], negative: [...]}` with
-  minimal event snippets; `porchlightctl rules test` runs them.
+  minimal event snippets; `plctl rules test` runs them.
 - A CI job runs `scripts/check-no-network.sh` (C1), which greps sources and checks
   `cargo tree` against a deny-list of network crates.
 - A CI job builds with Enhanced Security on and runs the replay suite under it (C9).
@@ -660,7 +668,7 @@ Build in this order. Each milestone is a PR with tests, and must pass CI.
 **M0 — Contract amendment.** This revision of the spec, ADR-0001 through ADR-0003, and the
 guard policy updates a Rust workspace needs. Docs only. Acceptance: merged.
 
-**M1 — Schema and store.** Cargo workspace, `schema`, `EventStore`, `porchlightctl replay`
+**M1 — Schema and store.** Cargo workspace, `schema`, `EventStore`, `plctl replay`
 reading `eslogger` NDJSON into the store with no graphs or rules, `scripts/check`,
 `check-no-network.sh`, Linux CI. Acceptance: round-trip a 10k-event fixture, byte-identical
 dump.
@@ -717,7 +725,7 @@ pub trait BaselineProvider {
 }
 ```
 
-`Pipeline` has a single `scorer: Option<Box<dyn AnomalyScorer>>` that is `None` in v0.
+`Pipeline` has a single `scorer: Option<Box<dyn AnomalyScorer + Send>>` that is `None` in v0.
 `RuleHit` is already the feature form of a rule result (§5.5).
 
 ---

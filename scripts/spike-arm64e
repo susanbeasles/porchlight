@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# M2 spike for SPEC §12 / ADR-0006: what does Enhanced Security require of a Rust binary?
+# Run after enabling the Enhanced Security capability on both targets in Xcode once and
+# building with scripts/build-apple. Prints evidence; changes nothing.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+[[ "$(uname -s)" == "Darwin" ]] || { echo "spike-arm64e: macOS only" >&2; exit 2; }
+config="${1:-Debug}"
+app="build/$config/Porchlight.app"
+ext="$app/Contents/Library/SystemExtensions/dev.susanb.porchlight.extension.systemextension"
+app_bin="$app/Contents/MacOS/Porchlight"
+ext_bin="$ext/Contents/MacOS/dev.susanb.porchlight.extension"
+
+section() { printf '\n== %s\n' "$1"; }
+
+section "toolchains"
+sw_vers
+xcodebuild -version
+rustc --version
+rustup target list --installed 2>/dev/null | sed 's/^/installed: /'
+rustc --print target-list | grep -E 'arm64e|aarch64-apple-darwin' | sed 's/^/known: /'
+
+section "architectures"
+for f in "$app_bin" "$ext_bin" target/aarch64-apple-darwin/release/pl-es; do
+  [[ -e "$f" ]] && printf '%s: %s\n' "$f" "$(lipo -archs "$f")"
+done
+
+section "what Xcode asks for (project settings after enabling the capability)"
+xcodebuild -project apple/Porchlight.xcodeproj -target PorchlightApp -showBuildSettings 2>/dev/null \
+  | grep -E '^\s*(ARCHS|ENABLE_ENHANCED_SECURITY|ENABLE_POINTER_AUTHENTICATION|CLANG_.*BOUNDS|CLANG_.*TYPED|ENABLE_.*HARDEN)' || true
+
+section "entitlements as signed"
+for b in "$app" "$ext"; do
+  echo "--- $b"
+  codesign -d --entitlements - --xml "$b" 2>/dev/null | plutil -p - 2>/dev/null || codesign -d --entitlements - "$b"
+done
+
+section "does the extension start? (needs it installed and approved)"
+log show --last 10m --predicate 'subsystem == "dev.susanb.porchlight.extension"' --style compact 2>/dev/null | tail -n 20 || true
+
+cat <<'TXT'
+
+Record in ADR-0006:
+  1. Which entitlement keys the capability added (section "entitlements as signed").
+  2. Whether Xcode set ARCHS to arm64e or reported that pointer authentication needs it.
+  3. Whether the arm64 Rust extension launches with those entitlements (log section).
+  If arm64e is required: try a pinned nightly with
+    rustup toolchain install nightly-YYYY-MM-DD --component rust-src
+    cargo +nightly-YYYY-MM-DD build -Zbuild-std --target arm64e-apple-darwin -p pl-es --release
+  and record the result.
+TXT

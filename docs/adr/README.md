@@ -10,3 +10,5 @@ contract says what it says, or answers one of its open questions.
 | [0002](0002-fixture-ingress-eslogger.md) | Fixture ingress format is eslogger NDJSON first | proposed |
 | [0003](0003-minimum-macos-26.md) | Minimum macOS 26 | proposed |
 | [0004](0004-m1-schema-and-ingest-decisions.md) | M1 schema and ingest decisions | proposed |
+| [0005](0005-m2-extension-build-and-ipc.md) | M2 extension build, IPC and naming | proposed |
+| [0006](0006-enhanced-security-and-arm64e.md) | Enhanced Security (C9) and arm64e for Rust binaries | open |

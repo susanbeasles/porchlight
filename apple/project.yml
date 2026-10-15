@@ -1,0 +1,90 @@
+# XcodeGen spec (ADR-0005). Generate with scripts/build-apple, never by hand:
+#   xcodegen generate --spec apple/project.yml --project apple
+# The generated Porchlight.xcodeproj is not committed. Cargo builds pl-es and pl-ffi first;
+# Xcode only bundles, embeds and signs (ADR-0001 decision 5).
+name: Porchlight
+options:
+  bundleIdPrefix: dev.susanb
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    DEVELOPMENT_TEAM: 2VB7966G7R
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_HARDENED_RUNTIME: YES
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: NO
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    MARKETING_VERSION: 0.1.0
+    CURRENT_PROJECT_VERSION: 1
+    # Where scripts/build-apple puts the cargo outputs.
+    PL_CARGO_OUT: $(SRCROOT)/../target/aarch64-apple-darwin/release
+targets:
+  PorchlightExtension:
+    type: system-extension
+    platform: macOS
+    sources:
+      - path: PorchlightExtension
+        excludes: ["*.plist", "*.entitlements"]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.susanb.porchlight.extension
+        PRODUCT_NAME: dev.susanb.porchlight.extension
+        INFOPLIST_FILE: PorchlightExtension/Info.plist
+        CODE_SIGN_ENTITLEMENTS: PorchlightExtension/PorchlightExtension.entitlements
+        SKIP_INSTALL: YES
+    postBuildScripts:
+      # Replaces the placeholder executable with the cargo-built extension. Runs before
+      # Xcode's CodeSign step, so the Rust binary is what gets signed.
+      - name: Install cargo-built pl-es
+        script: |
+          set -euo pipefail
+          src="${PL_CARGO_OUT}/pl-es"
+          dst="${TARGET_BUILD_DIR}/${EXECUTABLE_PATH}"
+          if [ ! -x "$src" ]; then
+            echo "error: $src not found; run scripts/build-apple, which builds it first"
+            exit 1
+          fi
+          cp -f "$src" "$dst"
+        inputFiles:
+          - $(PL_CARGO_OUT)/pl-es
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(EXECUTABLE_PATH)
+        basedOnDependencyAnalysis: true
+  PorchlightApp:
+    type: application
+    platform: macOS
+    sources:
+      - path: PorchlightApp
+        excludes: ["*.plist", "*.entitlements"]
+    dependencies:
+      - target: PorchlightExtension
+        embed: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.susanb.porchlight
+        PRODUCT_NAME: Porchlight
+        INFOPLIST_FILE: PorchlightApp/Info.plist
+        CODE_SIGN_ENTITLEMENTS: PorchlightApp/PorchlightApp.entitlements
+        SWIFT_VERSION: "5.0"
+        SWIFT_OBJC_BRIDGING_HEADER: PorchlightApp/Bridging-Header.h
+        HEADER_SEARCH_PATHS: $(SRCROOT)/../crates/pl-ffi/include
+        LIBRARY_SEARCH_PATHS: $(PL_CARGO_OUT)
+        OTHER_LDFLAGS: ["-lpl_ffi", "-lsqlite3"]
+    postBuildScripts:
+      # System extensions live in Contents/Library/SystemExtensions. Copied before the app's
+      # CodeSign step; the extension bundle is already signed.
+      - name: Embed system extension
+        script: |
+          set -euo pipefail
+          name="dev.susanb.porchlight.extension.systemextension"
+          dest="${TARGET_BUILD_DIR}/${CONTENTS_FOLDER_PATH}/Library/SystemExtensions"
+          mkdir -p "$dest"
+          rm -rf "${dest:?}/${name}"
+          ditto "${BUILT_PRODUCTS_DIR}/${name}" "${dest}/${name}"
+        inputFiles:
+          - $(BUILT_PRODUCTS_DIR)/dev.susanb.porchlight.extension.systemextension
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Library/SystemExtensions/dev.susanb.porchlight.extension.systemextension
