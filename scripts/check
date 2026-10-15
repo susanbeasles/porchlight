@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# The one entrypoint a contributor runs before pushing. CI runs the same thing.
+# Offline after the first `cargo fetch`.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+echo "== fmt"
+cargo fmt --all --check
+echo "== clippy"
+cargo clippy --workspace --all-targets --locked -- -D warnings
+echo "== test"
+cargo test --workspace --locked
+echo "== no-network (C1)"
+bash scripts/check-no-network.sh
+if rustup target list --installed 2>/dev/null | grep -q '^aarch64-apple-darwin$'; then
+  echo "== check (aarch64-apple-darwin)"
+  cargo check --workspace --locked --target aarch64-apple-darwin
+fi
+echo "== ok"

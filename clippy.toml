@@ -1,0 +1,5 @@
+# SPEC C7: deterministic replay. Hash-map iteration order must never reach output.
+disallowed-types = [
+  { path = "std::collections::HashMap", reason = "C7 deterministic replay: use BTreeMap" },
+  { path = "std::collections::HashSet", reason = "C7 deterministic replay: use BTreeSet" },
+]
