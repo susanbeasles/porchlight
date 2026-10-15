@@ -1,11 +1,8 @@
-# Example release workflow for the S1 and S2 actions (ADR-0008).
-# Agents may not write .github/workflows/; the owner copies this file there and edits
+# Release: seal a version on every push to main (ADR-0008).
+#   build -> draft release -> SHA256SUMS + cosign sign/attest -> upload -> verify -> publish
+#   -> dispatch deploy.yml at the new tag, which publishes the sealed tarball to npm.
+# Agents may not write .github/workflows/; the owner copies this file there and sets
 # working-directory and entry for the package being released.
-#
-# One-time setup on npmjs.com: package → Settings → Trusted publishing → GitHub Actions,
-# repository susanbeasles/porchlight, workflow file release.yml, environment npm.
-# Then remove every npm automation token for the package and set "Require two-factor
-# authentication and disallow tokens".
 name: release
 
 on:
@@ -21,25 +18,51 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-24.04
-    environment: npm            # gate with required reviewers if you want a human in the loop
     permissions:
-      contents: write           # GitHub release + bundle upload
-      id-token: write           # npm trusted publishing and cosign keyless signing
+      contents: write           # draft, upload, publish the release
+      id-token: write           # cosign keyless signing
+      actions: write            # dispatch deploy.yml
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0        # versioning reads commits since the last v* tag
           persist-credentials: false
 
-      - id: npm
-        uses: ./actions/npm-trusted-publish
+      - id: build
+        uses: ./actions/npm-build
         with:
           working-directory: packages/example
           entry: src/index.ts
           max-bundle-bytes: "65536"
 
-      - if: steps.npm.outputs.version != ''
+      - id: draft
+        if: steps.build.outputs.version != ''
+        uses: ./actions/sealed-release
+        with:
+          phase: draft
+          tag: ${{ steps.build.outputs.tag }}
+
+      - id: sign
+        if: steps.build.outputs.version != ''
         uses: ./actions/cosign-attest
         with:
-          subjects: ${{ steps.npm.outputs.tarball }}
-          release-tag: ${{ steps.npm.outputs.tag }}
+          subjects: ${{ steps.build.outputs.tarball }}
+          checksums-file: ${{ runner.temp }}/npm-pack/SHA256SUMS
+
+      - id: publish
+        if: steps.build.outputs.version != ''
+        uses: ./actions/sealed-release
+        with:
+          phase: publish
+          tag: ${{ steps.build.outputs.tag }}
+          release-id: ${{ steps.draft.outputs.release-id }}
+          files: ${{ steps.sign.outputs.files }}
+
+      - name: Deploy the sealed release to npm
+        if: steps.build.outputs.version != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.build.outputs.tag }}
+        # workflow_dispatch is one of the two events a GITHUB_TOKEN may trigger.
+        run: gh workflow run deploy.yml --ref "$TAG" -f tag="$TAG"

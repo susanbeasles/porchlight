@@ -1,4 +1,4 @@
-# ADR-0008: Supply-chain slices: npm trusted publishing and out-of-band cosign
+# ADR-0008: Sealed releases, then npm deploy from the sealed artifacts
 
 Status: proposed
 Date: 2026-10-15
@@ -6,71 +6,87 @@ Amends: SPEC.md §2 (layout), §9 (slices S1, S2)
 
 ## Context
 
-The owner asked for two small, focused composite GitHub Actions: one that publishes to
-npmjs.org with OIDC, provenance, a tree-shaken minimal bundle, automated versioning and a
-GitHub release on every push to `main`; and one that signs and attests artifacts with
-cosign over plain OIDC, out of band, without the GitHub attestations API. Porchlight has no
-npm package today, so both are generic and live in `actions/`, separate from the product.
+The owner wants npm publishing through OIDC with provenance, a tree-shaken minimal bundle,
+automatic versioning, and out-of-band cosign signing through the official cosign action
+(not the GitHub attestations API). The owner also set the shape: the GitHub release is
+sealed first, with every standard artifact (tarball, checksums, signature and provenance
+bundles), and npm publishing is a separate deploy workflow that ships those sealed
+artifacts. The release starts as a draft and goes live only once complete. Porchlight has no
+npm package today, so the actions are generic and live in `actions/`, apart from the product.
 
 ## Decision
 
-**No long-lived credentials.** S1 refuses to run when `NODE_AUTH_TOKEN` is set and does not
-pass `registry-url` to `setup-node`, which would write an `.npmrc` that reads that variable.
-npm 11.5.1+ exchanges the job's OIDC token for a short-lived, package-scoped publish
-credential. S2 uses Fulcio keyless certificates bound to the same OIDC identity. Neither
-action reads a secret.
+Two workflows, four small composite actions.
 
-**Build integrity.** `npm ci --ignore-scripts` from the lockfile; esbuild comes from the
-package's own pinned devDependency, not a floating global. The bundle is
-`--bundle --minify --tree-shaking=true --packages=external`, so runtime dependencies stay
-declared (and visible to `npm audit`) instead of being inlined. After `npm pack` the
-tarball's file list is checked against an allow-list (the bundle directory, `package.json`,
-README, LICENSE, CHANGELOG); anything else fails the job. The exact tarball that was checked
-is the one published, released and signed.
+```
+push to main ─ release.yml (contents:write, id-token:write, actions:write)
+  npm-build          npm ci --ignore-scripts; esbuild bundle; version; npm pack; allow-list
+  sealed-release     draft: new tag only, draft at $GITHUB_SHA
+  cosign-attest      SHA256SUMS; sign-blob + attest-blob (SLSA v1) each; self-verify
+  sealed-release     publish: upload; download each asset back, compare sha256;
+                     publish (the tag is created now); check the tag points at $GITHUB_SHA
+  gh workflow run deploy.yml --ref vX.Y.Z -f tag=vX.Y.Z
+                                   │
+deploy.yml at the tag (contents:read, id-token:write, environment npm)
+  npm-trusted-publish  download the release; verify the SHA256SUMS signature, the checksums,
+                       the tarball's signature and provenance against release.yml@main;
+                       provenance commit == $GITHUB_SHA; tarball version == tag;
+                       npm publish <tarball> --provenance; registry integrity == sealed sha512
+```
 
-**Versioning.** Conventional commits since the last `v*` tag that touch the package
-directory: a `!` or `BREAKING CHANGE` means major, `feat` means minor, anything else means patch. No
-commits means no release, which keeps re-runs idempotent. The base is the version in the registry, so
-a lost tag cannot cause a downgrade. A manifest version raised by hand wins when it is
-ahead. The bump is written to `package.json` in the runner only. Nothing is pushed back to
-`main`: no bot commits and no write-capable git credential in the job. The tag is created
-server-side by `gh release create --target $GITHUB_SHA`.
+**Build once, publish those bytes.** The deploy job builds nothing. The tarball npm
+receives is the one checksummed, signed and released, and the deploy proves it twice:
+before publishing, against the signed checksums, and after, against the registry's
+`dist.integrity`.
 
-**Out-of-band signing.** S2 installs cosign through the official
-`sigstore/cosign-installer`, pinned by commit SHA, and runs `sign-blob` and `attest-blob`
-(SLSA v1 predicate). Bundles are written as `<file>.sigstore.json` and
-`<file>.intoto.sigstore.json` and optionally uploaded to the release. The step verifies
-both bundles against the exact workflow identity
-(`https://github.com/$GITHUB_WORKFLOW_REF`) and the GitHub issuer before it returns, so an
-unverifiable bundle is never handed on. Verification needs only cosign and the public
-Sigstore roots, not GitHub.
+**Draft, then live.** Assets are attached to a draft that nobody can consume. The release
+is published only after every asset has been downloaded back by id and matched against the
+local file. On GitHub a draft has no tag yet, so the tag only ever points at a complete
+release. With release immutability on (repository setting), that release's assets and tag
+cannot change afterwards. A re-run reuses its own draft (same tag, same commit) and
+removes stray assets from it. Any other release carrying the tag is refused.
 
-**Disclosure guard.** Keyless signing writes the artifact digest, repository and workflow
-path to the public Rekor log. S2 refuses private repositories unless the caller sets
-`allow-private-repo: true`.
+**Why dispatch, not `on: release`.** Events caused by `GITHUB_TOKEN` do not start
+workflows, except `workflow_dispatch` and `repository_dispatch`. Dispatching with
+`--ref <tag>` also means the deploy runs the workflow and action code that were released,
+and npm provenance names the tagged commit. The deploy refuses to run on any other ref.
 
-**Pinning.** Every third-party action is pinned by full commit SHA. Composite actions
-inherit the caller's permissions, so the example workflow sets `permissions: {}` at the
-top and grants `contents: write` and `id-token: write` to the one job, in an `npm`
-environment the owner can gate with required reviewers.
+**Separation of duties.** Only the release job can sign (cosign identity
+`release.yml@refs/heads/main`). Only the deploy job can publish to npm (trusted publisher
+bound to `deploy.yml` and environment `npm`, which can require a human reviewer). Each job
+gets only the permissions its step needs. Neither job holds a long-lived secret. The deploy
+refuses `NODE_AUTH_TOKEN`, and `setup-node` is not given `registry-url`, which would write
+an `.npmrc` that reads that token.
 
-**Scope of C1.** C1 (no network) constrains the shipped app and extension. These actions
-are CI tooling, never linked into or shipped with the product, so C1 does not apply to them.
-`scripts/check` runs their unit tests when Node is present.
+**Versioning.** Conventional commits since the last `v*` tag that touch the package: a `!` or
+`BREAKING CHANGE` means major, `feat` means minor, anything else means patch, and no commits means no
+release. The base is the higher of the registry's version and the last tag, because a
+sealed release can be live before its deploy. A manifest version raised by hand wins when
+it is ahead. Nothing is committed back to `main`.
+
+**Idempotent deploy.** If npm already has the version with identical integrity, the deploy
+succeeds without publishing. Different bytes for that version fail the deploy. A late deploy of an
+older version publishes under `v<major>-backport` instead of moving `latest` backwards.
+
+**Disclosure guard.** Keyless signing writes the digest, repository and workflow to the
+public Rekor log, so `cosign-attest` refuses private repositories unless
+`allow-private-repo: true`. npm provenance also requires a public repository.
+
+**Pinning and scope.** Third-party actions are pinned by commit SHA. The workflows set
+`permissions: {}` at the top and grant per job. C1 (no network) constrains the shipped
+product. These actions are CI tooling and are never linked into it.
 
 ## Consequences
 
-- npm's own provenance and the cosign bundles are two independent attestations of the
-  same tarball. The npm one is checked by `npm audit signatures`; the cosign one is checked
-  with `cosign verify-blob` and needs no GitHub or npm.
-- Publish happens before cosign signs. If S2 fails after S1 publishes, the npm version
-  still carries npm provenance, but the release has no cosign bundles and the run is red.
-  To sign before publishing, split the publish into a second job that runs after `dry-run`
-  and S2. That is deferred until an actual package exists.
-- The provenance comes from the same job that builds, so it is SLSA Build L2, not L3. L3
-  needs the signing to run in an isolated reusable workflow. Callers that sign from a
-  reusable workflow set `certificate-identity` to that workflow's ref.
-- `.github/workflows/` is off-limits to agents (CLAUDE.md), so the workflow ships as
-  `docs/ci/release.yml` for the owner to copy.
-- The cosign v3 command line was written from the documentation and is not exercised in
-  this repository's CI. The self-verify step fails closed if a flag behaves differently.
+- Recovery is simple. A release with a failed deploy is retried with
+  `gh workflow run deploy.yml --ref vX.Y.Z -f tag=vX.Y.Z`. A failed release run leaves only
+  a draft, which the next run of the same commit reuses.
+- If deploys are skipped, the GitHub release can be ahead of npm, and versioning accounts
+  for it.
+- The provenance comes from the same job that builds, so it is SLSA Build L2, not L3.
+- `.github/workflows/` is off-limits to agents, so both workflows live in `docs/ci/` for the
+  owner to copy.
+- `actions/tests/run.sh` runs the full chain offline against stateful stubs of `gh`,
+  `cosign` and `npm`, and `scripts/check` runs it. The real cosign v3 flags, gh's handling
+  of drafts and the npm OIDC exchange are proven only by the first real run. Every one of
+  them fails closed.

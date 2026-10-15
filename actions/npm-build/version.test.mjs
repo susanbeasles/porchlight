@@ -43,3 +43,13 @@ test("next: bumps from the registry, not from a stale manifest", () => {
 test("next: a manually raised manifest wins when ahead", () => {
   assert.equal(next({ published: "1.4.2", manifest: "2.0.0", messages: ["fix: x"] }), "2.0.0");
 });
+
+test("next: a live release tag ahead of npm is never reused", () => {
+  // v1.5.0 was sealed and released, but its npm deploy has not run yet.
+  assert.equal(next({ published: "1.4.2", tagged: "1.5.0", manifest: "1.0.0", messages: ["fix: x"] }), "1.5.1");
+  assert.equal(next({ published: null, tagged: "0.1.0", manifest: "0.1.0", messages: ["feat: x"] }), "0.2.0");
+});
+
+test("next: npm ahead of the tags still wins", () => {
+  assert.equal(next({ published: "2.0.0", tagged: "1.9.0", manifest: "1.0.0", messages: ["fix: x"] }), "2.0.1");
+});

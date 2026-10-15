@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Stand-in for cosign. Bundles record the subject's sha256 and the signer identity, so
+# verification really fails when bytes or identity differ.
+set -euo pipefail
+cmd="$1"; shift
+bundle="" predicate="" identity="" file=""
+while (($#)); do
+  case "$1" in
+    --bundle) bundle="$2"; shift 2 ;;
+    --predicate) predicate="$2"; shift 2 ;;
+    --certificate-identity) identity="$2"; shift 2 ;;
+    --type|--certificate-oidc-issuer) shift 2 ;;
+    --yes) shift ;;
+    *) file="$1"; shift ;;
+  esac
+done
+sum=$(sha256sum "$file" | cut -d' ' -f1)
+signer="https://github.com/${GITHUB_WORKFLOW_REF:-none}"
+case "$cmd" in
+  sign-blob) jq -n --arg s "$sum" --arg i "$signer" '{sha: $s, identity: $i}' > "$bundle" ;;
+  attest-blob)
+    payload=$(jq -c '{predicate: .}' "$predicate" | base64 -w0)
+    jq -n --arg s "$sum" --arg i "$signer" --arg p "$payload" '{sha: $s, identity: $i, dsseEnvelope: {payload: $p}}' > "$bundle" ;;
+  verify-blob|verify-blob-attestation)
+    jq -e --arg s "$sum" --arg i "$identity" '.sha == $s and .identity == $i' "$bundle" >/dev/null \
+      || { echo "cosign stub: verification failed for $file" >&2; exit 1; } ;;
+  *) echo "cosign stub: unhandled $cmd" >&2; exit 2 ;;
+esac

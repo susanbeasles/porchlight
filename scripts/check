@@ -12,9 +12,10 @@ echo "== test"
 cargo test --workspace --locked
 echo "== no-network (C1)"
 bash scripts/check-no-network.sh
-if command -v node >/dev/null; then
-  echo "== actions (node --test)"
-  node --test actions/npm-trusted-publish/version.test.mjs
+if command -v node >/dev/null && command -v jq >/dev/null; then
+  echo "== actions (versioning unit tests, release chain end to end)"
+  node --test actions/npm-build/version.test.mjs
+  bash actions/tests/run.sh
 fi
 if rustup target list --installed 2>/dev/null | grep -q '^aarch64-apple-darwin$'; then
   echo "== check (aarch64-apple-darwin)"

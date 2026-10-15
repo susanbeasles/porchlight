@@ -1,12 +1,12 @@
 name: cosign attest
 description: >
   Keyless Sigstore signing and SLSA v1 provenance for files, out of band: cosign signs with
-  the job's GitHub OIDC identity, writes .sigstore.json bundles next to each file, verifies
-  them before returning, and optionally uploads them to a GitHub release. Does not use the
-  GitHub attestations API.
+  the job's GitHub OIDC identity, optionally writes and signs a SHA256SUMS file, writes
+  .sigstore.json bundles next to each file, and verifies them before returning. Does not
+  use the GitHub attestations API.
 
 # Caller requirements (see README.md):
-#   permissions: { id-token: write }        (+ contents: write when release-tag is set)
+#   permissions: { id-token: write }
 #   Signing records the file digest, repository and workflow in the public Rekor log.
 
 inputs:
@@ -24,22 +24,24 @@ inputs:
       Identity the bundles must verify against. Defaults to this workflow file at this ref
       (https://github.com/$GITHUB_WORKFLOW_REF). Set it when signing from a reusable workflow.
     default: ""
-  release-tag:
-    description: Upload the bundles to this existing GitHub release. Empty skips the upload.
+  checksums-file:
+    description: >
+      Write "sha256  basename" for every subject to this path and sign it too. Subjects must
+      have distinct basenames. Empty skips it.
     default: ""
   allow-private-repo:
     description: >
       Sign from a private repository. The repository and workflow names become public in
       Rekor, so this is refused unless set to "true".
     default: "false"
-  github-token:
-    description: Token for the release upload (needs contents write).
-    default: ${{ github.token }}
 
 outputs:
   bundles:
     description: Newline-separated paths of every bundle written (signature and attestation).
     value: ${{ steps.sign.outputs.bundles }}
+  files:
+    description: Newline-separated subjects, checksums file and bundles; everything to release.
+    value: ${{ steps.sign.outputs.files }}
   certificate-identity:
     description: The identity the bundles were verified against.
     value: ${{ steps.sign.outputs.identity }}
@@ -66,16 +68,5 @@ runs:
         SUBJECTS: ${{ inputs.subjects }}
         PREDICATE_TYPE: ${{ inputs.predicate-type }}
         IDENTITY: ${{ inputs.certificate-identity }}
+        CHECKSUMS_FILE: ${{ inputs.checksums-file }}
       run: bash "$GITHUB_ACTION_PATH/sign.sh"
-
-    - name: Upload bundles to the release
-      if: inputs.release-tag != ''
-      shell: bash
-      env:
-        GH_TOKEN: ${{ inputs.github-token }}
-        GH_REPO: ${{ github.repository }}
-        TAG: ${{ inputs.release-tag }}
-        BUNDLES: ${{ steps.sign.outputs.bundles }}
-      run: |
-        mapfile -t files < <(printf '%s\n' "$BUNDLES" | sed '/^$/d')
-        gh release upload "$TAG" "${files[@]}" --clobber

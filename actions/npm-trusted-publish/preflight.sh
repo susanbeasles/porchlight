@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Refuses anything that would weaken the trust chain before a byte is built.
+# Refuses anything that would weaken the trust chain before a byte is downloaded.
 set -euo pipefail
 
 fail() { echo "::error title=npm trusted publish::$1"; exit 1; }
@@ -10,10 +10,10 @@ fi
 if [[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]]; then
   fail "No OIDC token available. Grant the job 'permissions: id-token: write'."
 fi
-if [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
-  fail "Shallow clone. Versioning reads commit history; use actions/checkout with fetch-depth: 0."
+[[ "${TAG:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "tag must be v<major>.<minor>.<patch>, got '${TAG:-}'"
+# npm provenance names this run's commit. Running at the tag makes that the released commit,
+# and the workflow and action code are the ones that were released with it.
+if [[ "${GITHUB_REF:-}" != "refs/tags/$TAG" ]]; then
+  fail "Run at the release tag: gh workflow run <file> --ref $TAG -f tag=$TAG (got ref '${GITHUB_REF:-}')."
 fi
-if [[ "${DRY_RUN:-false}" != "true" && "${GITHUB_EVENT_NAME:-}" != "push" ]]; then
-  fail "Publishing runs only on push (got '${GITHUB_EVENT_NAME:-}'). Use dry-run: true elsewhere."
-fi
-echo "preflight: OIDC available, no static token, full history, event ${GITHUB_EVENT_NAME:-?}"
+echo "preflight: OIDC available, no static token, running at $GITHUB_REF ($GITHUB_SHA)"

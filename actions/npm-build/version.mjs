@@ -1,5 +1,6 @@
 // Next version from Conventional Commits since the last release tag.
-// The npm registry is the source of truth for what is already out; tags mark where.
+// The base is the higher of the registry's version and the last v* tag: a sealed GitHub
+// release can be live before its npm deploy finishes, and neither may be reused.
 // Every push with new commits releases: breaking -> major, feat -> minor, anything else -> patch.
 // Writes the version into package.json (no git commit, no git tag) and to $GITHUB_OUTPUT.
 
@@ -41,16 +42,18 @@ export function bump(version, kind) {
 
 /**
  * published: latest version on npm, or null if the package was never published.
+ * tagged: version of the last v* release tag, or null if there is none.
  * manifest: version in package.json. messages: commits since the last release tag.
- * Returns the version to publish, or null when there is nothing new.
+ * Returns the version to release, or null when there is nothing new.
  */
-export function next({ published, manifest, messages }) {
+export function next({ published, tagged = null, manifest, messages }) {
   if (messages.length === 0) return null;
-  if (published === null) return parse(manifest) && manifest; // first release: as declared
-  const base = compare(manifest, published) > 0 ? manifest : published;
-  const candidate = bump(published, level(messages));
+  const known = [published, tagged].filter((v) => v !== null);
+  if (known.length === 0) return parse(manifest) && manifest; // first release: as declared
+  const released = known.reduce((a, b) => (compare(a, b) >= 0 ? a : b));
+  const candidate = bump(released, level(messages));
   // A manually raised package.json version wins if it is ahead of the computed one.
-  return compare(base, candidate) > 0 ? base : candidate;
+  return compare(manifest, candidate) > 0 ? manifest : candidate;
 }
 
 function sh(cmd, args) {
@@ -66,15 +69,16 @@ function publishedVersion(name) {
   }
 }
 
-function commitsSinceLastTag() {
-  let range = "HEAD";
+function lastTag() {
   try {
-    const tag = sh("git", ["describe", "--tags", "--abbrev=0", "--match", "v[0-9]*.[0-9]*.[0-9]*"]);
-    range = `${tag}..HEAD`;
+    return sh("git", ["describe", "--tags", "--abbrev=0", "--match", "v[0-9]*.[0-9]*.[0-9]*"]);
   } catch {
-    // no release tag yet: every commit counts
+    return null; // no release tag yet: every commit counts
   }
-  const raw = sh("git", ["log", "--format=%B%x00", range, "--", "."]);
+}
+
+function commitsSince(tag) {
+  const raw = sh("git", ["log", "--format=%B%x00", tag ? `${tag}..HEAD` : "HEAD", "--", "."]);
   return raw.split("\0").map((s) => s.trim()).filter(Boolean);
 }
 
@@ -82,8 +86,10 @@ function main() {
   const pkg = JSON.parse(readFileSync("package.json", "utf8"));
   if (pkg.private) throw new Error("package.json is private; refusing to publish");
   const published = publishedVersion(pkg.name);
-  const messages = commitsSinceLastTag();
-  const version = next({ published, manifest: pkg.version, messages });
+  const tag = lastTag();
+  const tagged = tag && /^v\d+\.\d+\.\d+$/.test(tag) ? tag.slice(1) : null;
+  const messages = commitsSince(tag);
+  const version = next({ published, tagged, manifest: pkg.version, messages });
   const out = process.env.GITHUB_OUTPUT;
   if (version === null) {
     console.log(`version: no commits since the last release of ${pkg.name}; nothing to publish`);
@@ -91,7 +97,7 @@ function main() {
     return;
   }
   sh("npm", ["version", version, "--no-git-tag-version", "--allow-same-version"]);
-  console.log(`version: ${pkg.name} ${published ?? "(unpublished)"} -> ${version} from ${messages.length} commits`);
+  console.log(`version: ${pkg.name} npm ${published ?? "-"} tag ${tagged ?? "-"} -> ${version} from ${messages.length} commits`);
   if (out) appendFileSync(out, `version=${version}\ntag=v${version}\n`);
 }
 
@@ -99,7 +105,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   try {
     main();
   } catch (e) {
-    console.log(`::error title=npm trusted publish::${e.message}`);
+    console.log(`::error title=npm build::${e.message}`);
     process.exit(1);
   }
 }

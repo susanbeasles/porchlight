@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Packs once and refuses a package that ships anything beyond the bundle and its metadata.
-# The same tarball is what gets published, released and signed.
+# The same tarball is what gets checksummed, signed, released and later published.
 set -euo pipefail
 
-fail() { echo "::error title=npm trusted publish::$1"; exit 1; }
+fail() { echo "::error title=npm build::$1"; exit 1; }
 
 out_dir="$RUNNER_TEMP/npm-pack"
 rm -rf "$out_dir" && mkdir -p "$out_dir"

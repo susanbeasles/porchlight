@@ -2,7 +2,7 @@
 # One tree-shaken, minified bundle from the package's own pinned esbuild.
 set -euo pipefail
 
-fail() { echo "::error title=npm trusted publish::$1"; exit 1; }
+fail() { echo "::error title=npm build::$1"; exit 1; }
 
 [[ -x node_modules/.bin/esbuild ]] || fail "esbuild is not in devDependencies. Pin it there so the lockfile fixes its version and integrity."
 [[ -f "$ENTRY" ]] || fail "entry $ENTRY not found"

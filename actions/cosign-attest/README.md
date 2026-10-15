@@ -12,7 +12,7 @@ notes: [ADR-0008](../../docs/adr/0008-supply-chain-actions.md).
 
 ## Requirements
 
-- Job permission `id-token: write`, plus `contents: write` when `release-tag` is set.
+- Job permission `id-token: write`.
 - `jq` on the runner (present on GitHub-hosted runners).
 - Signing publishes the file digest, repository and workflow path to the public Rekor log.
   Private repositories are refused unless `allow-private-repo: "true"`.
@@ -25,7 +25,7 @@ notes: [ADR-0008](../../docs/adr/0008-supply-chain-actions.md).
     subjects: |
       dist/*.tgz
       build/**/*.zip
-    release-tag: v1.2.3       # optional: upload the bundles to this release
+    checksums-file: dist/SHA256SUMS   # optional: written over the subjects, then signed too
 ```
 
 | Input | Default | |
@@ -34,10 +34,16 @@ notes: [ADR-0008](../../docs/adr/0008-supply-chain-actions.md).
 | `cosign-release` | `v3.1.3` | cosign version |
 | `predicate-type` | `slsaprovenance1` | `attest-blob --type` |
 | `certificate-identity` | this workflow at this ref | Set it when signing from a reusable workflow |
-| `release-tag` | empty | Upload bundles with `gh release upload --clobber` |
+| `checksums-file` | empty | Write `sha256  basename` per subject here and sign it as well |
 | `allow-private-repo` | `false` | See the Rekor note above |
 
-Outputs: `bundles` (newline-separated paths) and `certificate-identity`.
+Outputs:
+- `bundles`: newline-separated paths.
+- `files`: the subjects, the checksums file and every bundle, which is everything to release.
+- `certificate-identity`.
+
+Uploading is left to the caller. [`sealed-release`](../sealed-release) does it for the
+release chain.
 
 ## Verify anywhere
 

@@ -1,0 +1,56 @@
+name: sealed release
+description: >
+  Two-phase GitHub release. "draft" opens a draft for a new tag at the built commit.
+  "publish" uploads the artifacts, downloads every asset back and checks its bytes, then
+  publishes the release. The tag exists only once the release is live (ADR-0008).
+
+# Caller requirements: permissions { contents: write }.
+# Turn on release immutability (Settings > General > Releases) so a published release's
+# assets and tag can never change afterwards.
+
+inputs:
+  phase:
+    description: draft or publish.
+    required: true
+  tag:
+    description: Release tag, v<major>.<minor>.<patch>. Must not exist yet.
+    required: true
+  target:
+    description: Commit SHA the tag will point at.
+    default: ${{ github.sha }}
+  release-id:
+    description: "publish: the release-id output of the draft phase."
+    default: ""
+  files:
+    description: "publish: newline-separated files to attach. The release ends with exactly these."
+    default: ""
+  github-token:
+    description: Token with contents write.
+    default: ${{ github.token }}
+
+outputs:
+  release-id:
+    description: Release id (draft phase).
+    value: ${{ steps.run.outputs.release-id }}
+  url:
+    description: Release page (publish phase).
+    value: ${{ steps.run.outputs.url }}
+
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        GH_REPO: ${{ github.repository }}
+        PHASE: ${{ inputs.phase }}
+        TAG: ${{ inputs.tag }}
+        TARGET: ${{ inputs.target }}
+        RELEASE_ID: ${{ inputs.release-id }}
+        FILES: ${{ inputs.files }}
+      run: |
+        case "$PHASE" in
+          draft|publish) bash "$GITHUB_ACTION_PATH/$PHASE.sh" ;;
+          *) echo "::error title=sealed release::phase must be draft or publish, got '$PHASE'"; exit 1 ;;
+        esac

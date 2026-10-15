@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Stand-in registry: one file per published version holding its integrity.
+set -euo pipefail
+S="${STUB_STATE:?}"; mkdir -p "$S/npm"
+case "$1 $3" in
+  "view dist.integrity")
+    f="$S/npm/${2//\//_}"; [[ -f "$f" ]] || { echo "npm error code E404" >&2; exit 1; }; cat "$f" ;;
+  "view dist-tags.latest") cat "$S/npm_latest" 2>/dev/null || { echo "npm error code E404" >&2; exit 1; } ;;
+  publish*)
+    all="$*"; tag="${all##*--tag }"; echo "$tag" > "$S/npm_published_tag"
+    node -e 'process.stdout.write("sha512-"+require("crypto").createHash("sha512").update(require("fs").readFileSync(process.argv[1])).digest("base64"))' "$2" \
+      > "$S/npm/${PACKAGE//\//_}@$VERSION" ;;
+  *) echo "npm stub: unhandled: $*" >&2; exit 2 ;;
+esac

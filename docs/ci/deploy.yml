@@ -1,0 +1,38 @@
+# Deploy: publish a sealed release to npm (ADR-0008). Dispatched by release.yml at the
+# release tag; run it by hand the same way to retry: gh workflow run deploy.yml --ref vX.Y.Z -f tag=vX.Y.Z
+#
+# One-time setup on npmjs.com: package > Settings > Trusted publishing > GitHub Actions,
+# repository susanbeasles/porchlight, workflow file deploy.yml, environment npm. Then
+# "Require two-factor authentication and disallow tokens" and delete any automation tokens.
+# The npm environment's deployment rule must allow tags matching v*.
+name: deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (v<major>.<minor>.<patch>); also pick it as the ref
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: deploy-npm
+  cancel-in-progress: false
+
+jobs:
+  npm:
+    runs-on: ubuntu-24.04
+    environment: npm            # add required reviewers here for a human gate
+    permissions:
+      contents: read            # read the release
+      id-token: write           # npm trusted publishing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false   # the action code comes from the tag being deployed
+
+      - uses: ./actions/npm-trusted-publish
+        with:
+          tag: ${{ inputs.tag }}

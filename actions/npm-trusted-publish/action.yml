@@ -1,66 +1,50 @@
 name: npm trusted publish
 description: >
-  Build a tree-shaken, minified bundle, verify the package holds only that bundle, compute
-  the next version from commits, publish to npmjs.org through OIDC trusted publishing with
-  provenance, and cut a GitHub release. No long-lived npm token is accepted.
+  Publish a sealed GitHub release to npmjs.org. Downloads the release assets, verifies the
+  signed SHA256SUMS, the tarball's cosign signature and its SLSA provenance (including that
+  it was built from this exact commit), then publishes that tarball byte for byte through
+  OIDC trusted publishing with npm provenance. Builds nothing. Accepts no npm token.
 
 # Caller requirements (see README.md):
-#   permissions: { contents: write, id-token: write }
-#   actions/checkout with fetch-depth: 0
+#   on: workflow_dispatch, run at the release tag (gh workflow run --ref <tag>)
+#   permissions: { contents: read, id-token: write }
 #   npm trusted publisher configured for this repository and the calling workflow file
-#   esbuild pinned in the package's devDependencies and package-lock.json
 
 inputs:
-  working-directory:
-    description: Package directory (contains package.json and package-lock.json).
-    default: "."
-  entry:
-    description: Bundle entry point, relative to working-directory.
+  tag:
+    description: Release tag to publish (v<major>.<minor>.<patch>). The run's ref must be this tag.
     required: true
-  out-file:
-    description: Bundle output, relative to working-directory. package.json "files" must cover it.
-    default: dist/index.js
-  format:
-    description: esbuild output format (esm, cjs).
-    default: esm
-  platform:
-    description: esbuild platform (node, neutral, browser).
-    default: node
-  target:
-    description: esbuild target.
-    default: node22
-  max-bundle-bytes:
-    description: Fail if the bundle exceeds this many bytes. 0 disables the budget.
-    default: "0"
+  signer-identity:
+    description: >
+      Certificate identity the release was signed with. Defaults to
+      https://github.com/<repo>/.github/workflows/release.yml@refs/heads/main.
+    default: ""
   node-version:
-    description: Node.js version for the build.
+    description: Node.js version.
     default: "22"
   npm-version:
     description: npm CLI version. Trusted publishing needs 11.5.1 or later.
     default: "11.5.1"
-  release:
-    description: Create a GitHub release for the published version.
-    default: "true"
+  cosign-release:
+    description: cosign version used for verification.
+    default: v3.1.3
   dry-run:
-    description: Do everything except publish and release.
+    description: Verify everything, publish nothing.
     default: "false"
   github-token:
-    description: Token for the GitHub release (needs contents write).
+    description: Token to read the release (contents read).
     default: ${{ github.token }}
 
 outputs:
+  package:
+    description: Package name.
+    value: ${{ steps.verify.outputs.package }}
   version:
-    description: The version published, or empty when nothing was released.
-    value: ${{ steps.version.outputs.version }}
-  tag:
-    description: The release tag (v<version>), or empty.
-    value: ${{ steps.version.outputs.tag }}
+    description: Version verified (and published unless dry-run or already on npm).
+    value: ${{ steps.verify.outputs.version }}
   tarball:
-    description: Absolute path of the exact tarball published, for signing.
-    value: ${{ steps.pack.outputs.tarball }}
-  bundle-bytes:
-    description: Size of the bundle in bytes.
-    value: ${{ steps.bundle.outputs.bytes }}
+    description: Path of the verified tarball.
+    value: ${{ steps.verify.outputs.tarball }}
 
 runs:
   using: composite
@@ -68,9 +52,14 @@ runs:
     - name: Preflight
       shell: bash
       env:
-        DRY_RUN: ${{ inputs.dry-run }}
+        TAG: ${{ inputs.tag }}
         NODE_AUTH_TOKEN_SET: ${{ env.NODE_AUTH_TOKEN != '' }}
       run: bash "$GITHUB_ACTION_PATH/preflight.sh"
+
+    - name: Install cosign
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      with:
+        cosign-release: ${{ inputs.cosign-release }}
 
     - name: Set up Node
       uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
@@ -82,58 +71,25 @@ runs:
 
     - name: Install npm with trusted publishing support
       shell: bash
-      run: npm install --global --ignore-scripts "npm@${{ inputs.npm-version }}" && npm --version
-
-    - name: Install dependencies from the lockfile, without install scripts
-      shell: bash
-      working-directory: ${{ inputs.working-directory }}
-      run: npm ci --ignore-scripts
-
-    - name: Bundle (tree-shaken, minified)
-      id: bundle
-      shell: bash
-      working-directory: ${{ inputs.working-directory }}
       env:
-        ENTRY: ${{ inputs.entry }}
-        OUT_FILE: ${{ inputs.out-file }}
-        FORMAT: ${{ inputs.format }}
-        PLATFORM: ${{ inputs.platform }}
-        TARGET: ${{ inputs.target }}
-        MAX_BYTES: ${{ inputs.max-bundle-bytes }}
-      run: bash "$GITHUB_ACTION_PATH/bundle.sh"
+        NPM_VERSION: ${{ inputs.npm-version }}
+      run: npm install --global --ignore-scripts "npm@$NPM_VERSION" && npm --version
 
-    - name: Compute version
-      id: version
-      shell: bash
-      working-directory: ${{ inputs.working-directory }}
-      run: node "$GITHUB_ACTION_PATH/version.mjs"
-
-    - name: Pack and check contents
-      id: pack
-      if: steps.version.outputs.version != ''
-      shell: bash
-      working-directory: ${{ inputs.working-directory }}
-      env:
-        OUT_FILE: ${{ inputs.out-file }}
-      run: bash "$GITHUB_ACTION_PATH/pack.sh"
-
-    - name: Publish to npm (OIDC trusted publishing, provenance)
-      if: steps.version.outputs.version != '' && inputs.dry-run != 'true'
-      shell: bash
-      working-directory: ${{ inputs.working-directory }}
-      env:
-        TARBALL: ${{ steps.pack.outputs.tarball }}
-      # No NODE_AUTH_TOKEN: npm exchanges the job's OIDC token for a short-lived
-      # publish credential and attaches a Sigstore provenance attestation.
-      run: npm publish "$TARBALL" --provenance --access public
-
-    - name: GitHub release
-      if: steps.version.outputs.version != '' && inputs.release == 'true' && inputs.dry-run != 'true'
+    - name: Download and verify the sealed release
+      id: verify
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         GH_REPO: ${{ github.repository }}
-        TAG: ${{ steps.version.outputs.tag }}
-        TARBALL: ${{ steps.pack.outputs.tarball }}
-      # The tag is created server-side at the built commit; no git credentials persist.
-      run: gh release create "$TAG" "$TARBALL" --target "$GITHUB_SHA" --title "$TAG" --generate-notes
+        TAG: ${{ inputs.tag }}
+        IDENTITY: ${{ inputs.signer-identity }}
+      run: bash "$GITHUB_ACTION_PATH/verify.sh"
+
+    - name: Publish to npm (OIDC trusted publishing, provenance)
+      shell: bash
+      env:
+        PACKAGE: ${{ steps.verify.outputs.package }}
+        VERSION: ${{ steps.verify.outputs.version }}
+        TARBALL: ${{ steps.verify.outputs.tarball }}
+        DRY_RUN: ${{ inputs.dry-run }}
+      run: bash "$GITHUB_ACTION_PATH/publish.sh"

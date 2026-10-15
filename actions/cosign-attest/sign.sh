@@ -28,6 +28,18 @@ while IFS= read -r pattern; do
   done
 done <<< "${SUBJECTS:-}"
 ((${#files[@]})) || fail "No subjects given."
+subjects=("${files[@]}")
+
+# SHA256SUMS over the subjects by basename, so it checks in any download directory.
+if [[ -n "${CHECKSUMS_FILE:-}" ]]; then
+  dupes=$(for f in "${files[@]}"; do basename "$f"; done | sort | uniq -d)
+  [[ -z "$dupes" ]] || fail "Subjects share basenames, so SHA256SUMS would be ambiguous: $dupes"
+  : > "$CHECKSUMS_FILE"
+  for f in "${files[@]}"; do
+    printf '%s  %s\n' "$(sha256sum "$f" | cut -d' ' -f1)" "$(basename "$f")" >> "$CHECKSUMS_FILE"
+  done
+  files+=("$CHECKSUMS_FILE")
+fi
 
 server="${GITHUB_SERVER_URL:-https://github.com}"
 predicate="${RUNNER_TEMP:?}/cosign-attest-predicate.json"
@@ -94,6 +106,11 @@ delim="EOF_$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
 {
   echo "identity=$identity"
   echo "bundles<<$delim"
+  printf '%s\n' "${bundles[@]}"
+  echo "$delim"
+  echo "files<<$delim"
+  printf '%s\n' "${subjects[@]}"
+  [[ -z "${CHECKSUMS_FILE:-}" ]] || echo "$CHECKSUMS_FILE"
   printf '%s\n' "${bundles[@]}"
   echo "$delim"
 } >> "${GITHUB_OUTPUT:?}"

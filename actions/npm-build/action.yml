@@ -1,0 +1,95 @@
+name: npm build
+description: >
+  Build the sealed npm artifact: a tree-shaken, minified bundle from the lockfile, the next
+  version from commits, and one packed tarball whose contents are allow-listed. Writes
+  nothing anywhere but the runner. Release and publish are separate steps (ADR-0008).
+
+inputs:
+  working-directory:
+    description: Package directory (contains package.json and package-lock.json).
+    default: "."
+  entry:
+    description: Bundle entry point, relative to working-directory.
+    required: true
+  out-file:
+    description: Bundle output, relative to working-directory. package.json "files" must cover it.
+    default: dist/index.js
+  format:
+    description: esbuild output format (esm, cjs).
+    default: esm
+  platform:
+    description: esbuild platform (node, neutral, browser).
+    default: node
+  target:
+    description: esbuild target.
+    default: node22
+  max-bundle-bytes:
+    description: Fail if the bundle exceeds this many bytes. 0 disables the budget.
+    default: "0"
+  node-version:
+    description: Node.js version for the build.
+    default: "22"
+
+outputs:
+  version:
+    description: The version to release, or empty when there are no new commits.
+    value: ${{ steps.version.outputs.version }}
+  tag:
+    description: The release tag (v<version>), or empty.
+    value: ${{ steps.version.outputs.tag }}
+  tarball:
+    description: Absolute path of the packed tarball. Its directory holds nothing else.
+    value: ${{ steps.pack.outputs.tarball }}
+  bundle-bytes:
+    description: Size of the bundle in bytes.
+    value: ${{ steps.bundle.outputs.bytes }}
+
+runs:
+  using: composite
+  steps:
+    - name: Require full history
+      shell: bash
+      run: |
+        if [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
+          echo "::error title=npm build::Shallow clone. Versioning reads commit history; use actions/checkout with fetch-depth: 0."
+          exit 1
+        fi
+
+    - name: Set up Node
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      with:
+        node-version: ${{ inputs.node-version }}
+        package-manager-cache: false
+
+    - name: Install dependencies from the lockfile, without install scripts
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: npm ci --ignore-scripts
+
+    - name: Bundle (tree-shaken, minified)
+      id: bundle
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        ENTRY: ${{ inputs.entry }}
+        OUT_FILE: ${{ inputs.out-file }}
+        FORMAT: ${{ inputs.format }}
+        PLATFORM: ${{ inputs.platform }}
+        TARGET: ${{ inputs.target }}
+        MAX_BYTES: ${{ inputs.max-bundle-bytes }}
+      run: bash "$GITHUB_ACTION_PATH/bundle.sh"
+
+    - name: Compute version
+      id: version
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: node "$GITHUB_ACTION_PATH/version.mjs"
+
+    - name: Pack and check contents
+      id: pack
+      if: steps.version.outputs.version != ''
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        OUT_FILE: ${{ inputs.out-file }}
+      run: bash "$GITHUB_ACTION_PATH/pack.sh"

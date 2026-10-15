@@ -104,12 +104,15 @@ porchlight/
 ├── Rules/                              # Rule corpus (YAML), ATT&CK mapping JSON
 ├── Fixtures/                           # Human-recorded eslogger NDJSON + golden outputs
 ├── actions/                            # Supply-chain slices S1, S2 (ADR-0008). CI only;
-│   ├── npm-trusted-publish/            # never part of the shipped app
-│   └── cosign-attest/
+│   ├── npm-build/                      # never part of the shipped app
+│   ├── cosign-attest/
+│   ├── sealed-release/
+│   ├── npm-trusted-publish/
+│   └── tests/                          # Release chain end to end against gh/cosign/npm stubs
 ├── docs/
 │   ├── development.md
 │   ├── schema.md                       # Generated from schema doc comments
-│   ├── ci/release.yml                  # Example workflow for the actions; owner copies it
+│   ├── ci/                             # release.yml, deploy.yml; the owner copies them
 │   └── adr/                            # Architecture decision records
 └── scripts/
     ├── check                           # fmt, clippy, test, no-network: the one entrypoint
@@ -720,20 +723,23 @@ notarized build, `v0.1.0` tag.
 Slices are small, independent of the milestone order, and shippable on their own. They
 touch only `actions/` and `docs/`, never the product. See ADR-0008.
 
-**S1 — npm trusted publish action.** `actions/npm-trusted-publish`: esbuild tree-shaken,
-minified bundle with an optional size budget; a tarball allow-list check; version computed
-from conventional commits against the registry; `npm publish --provenance` through OIDC
-trusted publishing with no stored token; a GitHub release at the built commit. Acceptance:
-`node --test` on the versioning logic in `scripts/check`, and a `dry-run: true` run of
-`docs/ci/release.yml` that produces the tarball without publishing.
+**S1 — Sealed release.** `docs/ci/release.yml` on every push to `main` with new commits:
+`actions/npm-build` (lockfile install without scripts, esbuild tree-shaken minified bundle
+with a size budget, version from conventional commits, one allow-listed tarball), then
+`actions/sealed-release` opens a draft, `actions/cosign-attest` writes `SHA256SUMS` and
+signs and attests it and the tarball, `sealed-release` uploads everything, downloads it
+back and checks every byte, publishes the release (the tag appears only now), and the job
+dispatches the deploy at that tag. Acceptance: `actions/tests/run.sh` in `scripts/check`;
+a real run produces a live release holding the tarball, `SHA256SUMS` and the four bundles.
 
-**S2 — cosign attest action.** `actions/cosign-attest`: keyless `cosign sign-blob` and
-`attest-blob` (SLSA v1 predicate) with the job's GitHub OIDC identity through the official
-`sigstore/cosign-installer`, bundles written as files beside each subject and optionally
-uploaded to the release, verified against the workflow identity before the step returns.
-No GitHub attestations API. Acceptance: on a release run, `cosign verify-blob` and
-`cosign verify-blob-attestation` from a separate machine succeed with the documented
-identity and issuer.
+**S2 — npm deploy.** `docs/ci/deploy.yml`, dispatched at the release tag:
+`actions/npm-trusted-publish` downloads the sealed release, verifies the `SHA256SUMS`
+signature, the checksums, the tarball's signature and SLSA provenance against the release
+workflow's identity, that the provenance names this commit and the tarball the tagged
+version, then publishes that tarball through OIDC trusted publishing with npm provenance
+and checks the registry's integrity equals the sealed bytes. Builds nothing. Acceptance:
+the same harness; a real run whose `npm audit signatures` passes and whose registry
+integrity matches the release asset.
 
 ---
 
