@@ -112,7 +112,8 @@ scripts/accept-m2          # 60 seconds; pass a number for longer
 ```
 
 It builds `plctl` first so nothing compiles during the measurement, asks for sudo up
-front, records (failing at once, with the app to grant, if `eslogger` stops early), snapshots `ps` the instant recording stops, drops a partial last line,
+front, records (failing at once, with the app to grant, if `eslogger` stops early), snapshots `ps`
+just before and just after stopping (ADR-0009), drops a partial last line,
 replays into a throwaway store, and prints the comparison. The trace contains every
 command line on the machine for that window, so it is kept in a private 0700 directory and
 deleted on exit. Only the JSON report is printed.

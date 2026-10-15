@@ -8,6 +8,12 @@
 //! process the collector believes alive is in `ps`, and every process `ps` shows as started
 //! during the window is tracked. Processes started before collection are out of scope until
 //! M4's startup seeding, so they are filtered by age.
+//!
+//! Stopping the collector races with `ps`: a process can exit between the stop and the
+//! snapshot, and the stopper itself (`sudo kill`) starts and exits around that instant. With a
+//! second snapshot taken just before the stop, a live process counts as present if either
+//! snapshot shows it, and one that started after the first snapshot is `unverifiable`: no
+//! snapshot could have seen it, so it is reported but does not fail the check (ADR-0009).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -21,6 +27,8 @@ pub struct LiveProcess {
     pub executable_path: String,
     /// Event id that first made this token live.
     pub since_event: u64,
+    /// Wall time (ns) of the `fork` or `exec` that first made this token live.
+    pub since_wall_ns: i64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
@@ -56,23 +64,26 @@ impl LiveProcesses {
                         pid: child.pid,
                         executable_path: event.process.executable_path.clone(),
                         since_event: event.id,
+                        since_wall_ns: event.wall_time.0,
                     },
                 );
             }
             Kind::Exec { target, .. } => {
                 self.stats.execs += 1;
-                let since = if target.token.pidversion != event.process.token.pidversion
+                let fresh = (event.id, event.wall_time.0);
+                let (since, since_wall_ns) = if target.token.pidversion
+                    != event.process.token.pidversion
                     || target.token.pid != event.process.token.pid
                 {
                     self.stats.exec_pidversion_changed += 1;
                     self.live
                         .remove(&event.process.token)
-                        .map_or(event.id, |p| p.since_event)
+                        .map_or(fresh, |p| (p.since_event, p.since_wall_ns))
                 } else {
                     self.stats.exec_pidversion_same += 1;
                     self.live
                         .get(&target.token)
-                        .map_or(event.id, |p| p.since_event)
+                        .map_or(fresh, |p| (p.since_event, p.since_wall_ns))
                 };
                 self.live.insert(
                     target.token,
@@ -80,6 +91,7 @@ impl LiveProcesses {
                         pid: target.token.pid,
                         executable_path: target.executable_path.clone(),
                         since_event: since,
+                        since_wall_ns,
                     },
                 );
             }
@@ -112,6 +124,24 @@ impl LiveProcesses {
     pub fn pids(&self) -> BTreeSet<i32> {
         self.live.keys().map(|t| t.pid).collect()
     }
+
+    /// Live pids with the wall time (ns) each became live. For a pid held by several tokens
+    /// (pid reuse inside the window), the latest start wins.
+    pub fn started(&self) -> BTreeMap<i32, i64> {
+        let mut out = BTreeMap::new();
+        for p in self.live.values() {
+            let e = out.entry(p.pid).or_insert(p.since_wall_ns);
+            *e = (*e).max(p.since_wall_ns);
+        }
+        out
+    }
+}
+
+/// A `ps` snapshot taken just before the collector stopped, and when it was taken.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BeforeStop {
+    pub pids: BTreeSet<i32>,
+    pub wall_ns: i64,
 }
 
 /// One `ps -axo pid=,etime=` row.
@@ -170,6 +200,9 @@ pub struct Comparison {
     pub ps_in_window: usize,
     /// Alive per the collector, absent from `ps`: a missed or dropped `exit`.
     pub missing_from_ps: Vec<i32>,
+    /// Alive per the collector, absent from both snapshots, but started after the pre-stop
+    /// snapshot (within slack), so no snapshot could have seen it. Reported, not a failure.
+    pub unverifiable: Vec<i32>,
     /// In `ps`, started inside the window, never seen starting: a missed `fork`/`exec`.
     pub untracked_in_window: Vec<i32>,
 }
@@ -180,16 +213,32 @@ impl Comparison {
     }
 }
 
-/// `window_secs` is how long collection had been running when `ps` ran. `slack_secs` ignores
-/// processes too close to either edge of the window: ones that started as collection began,
-/// and ones (like `ps` itself) whose events were still in flight.
+/// `live` maps each live pid to when it became live (`LiveProcesses::started`). `ps` is the
+/// snapshot taken just after the collector stopped; `before` the optional one taken just
+/// before. `window_secs` is how long collection had been running when `ps` ran. `slack_secs`
+/// ignores processes too close to either edge of the window: ones that started as collection
+/// began, and ones (like `ps` itself) whose events were still in flight.
 pub fn compare_with_ps(
-    live: &BTreeSet<i32>,
+    live: &BTreeMap<i32, i64>,
     ps: &[PsRow],
+    before: Option<&BeforeStop>,
     window_secs: u64,
     slack_secs: u64,
 ) -> Comparison {
     let ps_pids: BTreeSet<i32> = ps.iter().map(|r| r.pid).collect();
+    let slack_ns = i64::try_from(slack_secs.saturating_mul(1_000_000_000)).unwrap_or(i64::MAX);
+    let mut missing_from_ps = Vec::new();
+    let mut unverifiable = Vec::new();
+    for (&pid, &since_wall_ns) in live {
+        if ps_pids.contains(&pid) {
+            continue;
+        }
+        match before {
+            Some(b) if b.pids.contains(&pid) => {}
+            Some(b) if since_wall_ns > b.wall_ns.saturating_sub(slack_ns) => unverifiable.push(pid),
+            _ => missing_from_ps.push(pid),
+        }
+    }
     let in_window: Vec<&PsRow> = ps
         .iter()
         .filter(|r| r.age_secs >= slack_secs && r.age_secs.saturating_add(slack_secs) < window_secs)
@@ -198,14 +247,11 @@ pub fn compare_with_ps(
         tracked_live: live.len(),
         ps_total: ps.len(),
         ps_in_window: in_window.len(),
-        missing_from_ps: live
-            .iter()
-            .filter(|p| !ps_pids.contains(p))
-            .copied()
-            .collect(),
+        missing_from_ps,
+        unverifiable,
         untracked_in_window: in_window
             .iter()
-            .filter(|r| !live.contains(&r.pid))
+            .filter(|r| !live.contains_key(&r.pid))
             .map(|r| r.pid)
             .collect(),
     }
@@ -332,7 +378,7 @@ mod tests {
 
     #[test]
     fn compare_filters_by_window_with_slack() {
-        let live = BTreeSet::from([10, 11, 99]);
+        let live = BTreeMap::from([(10, 0), (11, 0), (99, 0)]);
         let ps = [
             PsRow {
                 pid: 1,
@@ -359,12 +405,57 @@ mod tests {
                 age_secs: 58,
             }, // within slack of window start: ignored
         ];
-        let c = compare_with_ps(&live, &ps, 60, 3);
+        let c = compare_with_ps(&live, &ps, None, 60, 3);
         assert_eq!(c.missing_from_ps, vec![99]);
         assert_eq!(c.untracked_in_window, vec![12]);
         assert_eq!((c.tracked_live, c.ps_total, c.ps_in_window), (3, 6, 2));
         assert!(!c.agrees());
-        let ok = compare_with_ps(&BTreeSet::from([10]), &ps[..2], 60, 3);
+        let ok = compare_with_ps(&BTreeMap::from([(10, 0)]), &ps[..2], None, 60, 3);
         assert!(ok.agrees());
+    }
+
+    #[test]
+    fn stop_race_uses_the_pre_stop_snapshot() {
+        const S: i64 = 1_000_000_000;
+        // ps (after the stop) shows only pid 10.
+        let after = [PsRow {
+            pid: 10,
+            age_secs: 30,
+        }];
+        let before = BeforeStop {
+            pids: BTreeSet::from([10, 20]),
+            wall_ns: 100 * S,
+        };
+        let live = BTreeMap::from([
+            (10, 50 * S),      // in both snapshots
+            (20, 40 * S),      // exited between the stop and ps: seen before the stop
+            (30, 100 * S + 1), // the stopper: started after the pre-stop snapshot
+            (40, 98 * S),      // started within slack before that snapshot
+            (50, 10 * S),      // long-lived, in neither snapshot: a missed exit
+        ]);
+        let c = compare_with_ps(&live, &after, Some(&before), 60, 3);
+        assert_eq!(c.missing_from_ps, vec![50]);
+        assert_eq!(c.unverifiable, vec![30, 40]);
+        assert!(!c.agrees());
+
+        let without_miss: BTreeMap<i32, i64> = live.into_iter().filter(|(p, _)| *p != 50).collect();
+        let ok = compare_with_ps(&without_miss, &after, Some(&before), 60, 3);
+        assert!(ok.agrees(), "{ok:?}");
+        // Without a pre-stop snapshot the old, strict rule applies.
+        let strict = compare_with_ps(&without_miss, &after, None, 60, 3);
+        assert_eq!(strict.missing_from_ps, vec![20, 30, 40]);
+    }
+
+    #[test]
+    fn started_tracks_wall_time_through_exec() {
+        let mut l = LiveProcesses::new();
+        let (parent, child, after) = (tok(1, 1), tok(2, 1), tok(2, 2));
+        let mut fork = ev(1, parent, Kind::Fork { child });
+        fork.wall_time = crate::schema::WallTime(7);
+        l.apply(&fork);
+        let mut exec = exec_into(2, child, after, "/bin/ls");
+        exec.wall_time = crate::schema::WallTime(9);
+        l.apply(&exec);
+        assert_eq!(l.started(), BTreeMap::from([(2, 7)]));
     }
 }

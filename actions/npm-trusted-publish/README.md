@@ -41,7 +41,7 @@ deployed late goes out under `v<major>-backport`, so `latest` never moves backwa
 | `package-name` | required | The activated package name (`release-gate` output at the tag) |
 | `signer-identity` | `https://github.com/<repo>/.github/workflows/release.yml@refs/heads/main` | Who must have signed it |
 | `dry-run` | `false` | Verify everything, publish nothing |
-| `node-version` / `npm-version` / `cosign-release` | `22` / `11.5.1` / `v3.1.3` | |
+| `node-version` / `npm-version` | `22` / `11.5.1` | cosign is fixed at v3.1.3, SHA-256 pinned (`../cosign-attest/install-cosign.sh`) |
 
 ## Verify as a consumer
 

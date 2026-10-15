@@ -30,6 +30,7 @@ Commands:
       Run eslogger with Porchlight's exact notify event set (macOS only; needs Full Disk
       Access on the terminal).
   processes --db <path> [--ps-file <file> --window-secs <n>] [--slack-secs <n>]
+            [--ps-before <file> --ps-before-at <unix-secs>]
       M2 acceptance: replay the store's exec/fork/exit into a live-process set and compare
       it with `ps -axo pid=,etime=` (run on macOS, or read from --ps-file). Exits 2 when a
       tracked process is missing from ps, or ps shows a process started during collection
@@ -280,8 +281,19 @@ fn verify_db(args: &[String]) -> CliResult {
 }
 
 fn processes(args: &[String]) -> CliResult {
-    use pl_core::live::{LiveProcesses, compare_with_ps, parse_ps};
-    let opts = Opts::parse(args, &["db", "ps-file", "window-secs", "slack-secs"], &[])?;
+    use pl_core::live::{BeforeStop, LiveProcesses, compare_with_ps, parse_ps};
+    let opts = Opts::parse(
+        args,
+        &[
+            "db",
+            "ps-file",
+            "window-secs",
+            "slack-secs",
+            "ps-before",
+            "ps-before-at",
+        ],
+        &[],
+    )?;
     let db = opts.value("db").ok_or("processes: --db is required")?;
     let slack = opts.u64_value("slack-secs")?.unwrap_or(3);
     let store = EventStore::open_read_only(Path::new(db))?;
@@ -335,7 +347,29 @@ fn processes(args: &[String]) -> CliResult {
     if !bad.is_empty() {
         eprintln!("processes: ignored {} unparseable ps lines", bad.len());
     }
-    let cmp = compare_with_ps(&live.pids(), &rows, window, slack);
+    // The snapshot taken just before the collector stopped, for the stop race (ADR-0009).
+    let before = match (opts.value("ps-before"), opts.u64_value("ps-before-at")?) {
+        (Some(file), Some(at)) => {
+            let (before_rows, before_bad) = parse_ps(&std::fs::read_to_string(file)?);
+            if !before_bad.is_empty() {
+                return Err(format!(
+                    "processes: {} unparseable lines in --ps-before",
+                    before_bad.len()
+                )
+                .into());
+            }
+            Some(BeforeStop {
+                pids: before_rows.iter().map(|r| r.pid).collect(),
+                wall_ns: i64::try_from(at)
+                    .ok()
+                    .and_then(|s| s.checked_mul(1_000_000_000))
+                    .ok_or("processes: --ps-before-at out of range")?,
+            })
+        }
+        (None, None) => None,
+        _ => return Err("processes: --ps-before and --ps-before-at go together".into()),
+    };
+    let cmp = compare_with_ps(&live.started(), &rows, before.as_ref(), window, slack);
     let report = serde_json::json!({
                 "sessions_in_store": sessions,
         "window_secs": window,

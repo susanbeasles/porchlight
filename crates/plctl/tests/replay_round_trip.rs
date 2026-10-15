@@ -389,3 +389,65 @@ fn usage_and_unknown_command() {
             .any(|l| l == "tcc_modify")
     );
 }
+
+#[test]
+fn processes_resolves_the_stop_race_with_a_pre_stop_snapshot() {
+    // The fixture's live process (pid 200) started at 2026-10-15T02:33:44Z = 1792031624.
+    let dir = temp_dir("procs-before");
+    let db = processes_db(&dir);
+    let after = dir.join("after.txt");
+    fs::write(&after, "    1 5-00:00:00\n").unwrap(); // pid 200 exited after the stop
+    let run = |before: &str, at: &str| {
+        let file = dir.join("before.txt");
+        fs::write(&file, before).unwrap();
+        let out = bin()
+            .args([
+                "processes",
+                "--db",
+                db.to_str().unwrap(),
+                "--ps-file",
+                after.to_str().unwrap(),
+                "--window-secs",
+                "60",
+                "--ps-before",
+                file.to_str().unwrap(),
+                "--ps-before-at",
+                at,
+            ])
+            .output()
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+        (out.status.code(), v)
+    };
+    // Seen just before the stop: present.
+    let (code, v) = run("    1 5-00:00:00\n  200   00:20\n", "1792031700");
+    assert_eq!(
+        (code, &v["agrees"]),
+        (Some(0), &serde_json::json!(true)),
+        "{v}"
+    );
+    // Started after the pre-stop snapshot (like the stopper): unverifiable, not a failure.
+    let (code, v) = run("    1 5-00:00:00\n", "1792031620");
+    assert_eq!(code, Some(0), "{v}");
+    assert_eq!(v["comparison"]["unverifiable"], serde_json::json!([200]));
+    // Started well before the pre-stop snapshot and in neither: a real miss.
+    let (code, v) = run("    1 5-00:00:00\n", "1792031700");
+    assert_eq!(code, Some(2), "{v}");
+    assert_eq!(v["comparison"]["missing_from_ps"], serde_json::json!([200]));
+    // The two options go together.
+    let half = bin()
+        .args([
+            "processes",
+            "--db",
+            db.to_str().unwrap(),
+            "--ps-file",
+            after.to_str().unwrap(),
+            "--window-secs",
+            "60",
+            "--ps-before-at",
+            "1",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(half.status.code(), Some(1));
+}
