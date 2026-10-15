@@ -46,17 +46,21 @@ impl Pipeline {
         if batch.is_empty() {
             return Ok(IngestReport::default());
         }
+        // Ids are committed to `next_id` only after the append succeeds, so a failed
+        // append leaves the pipeline aligned with the store's high-water mark.
         let first_id = self.next_id;
+        let mut id = first_id;
         for event in &mut batch {
-            event.id = self.next_id;
+            event.id = id;
             event.schema_version = SCHEMA_VERSION;
-            self.next_id += 1;
+            id += 1;
         }
         self.store.append(&batch)?;
+        self.next_id = id;
         Ok(IngestReport {
             ingested: batch.len() as u64,
             first_id,
-            last_id: self.next_id - 1,
+            last_id: id - 1,
         })
     }
 
@@ -114,6 +118,25 @@ mod tests {
             vec![1, 2, 3, 4]
         );
         assert!(stored.iter().all(|e| e.schema_version == SCHEMA_VERSION));
+    }
+
+    #[test]
+    fn failed_append_does_not_advance_ids() {
+        let mut p = Pipeline::new(EventStore::open_in_memory().unwrap()).unwrap();
+        p.ingest(vec![unassigned(Kind::Exit { status: 0 })])
+            .unwrap();
+        let mut bad = unassigned(Kind::Exit { status: 1 });
+        bad.mach_time = MachTime(u64::MAX); // exceeds SQLite INTEGER: append fails
+        assert!(
+            p.ingest(vec![unassigned(Kind::Exit { status: 0 }), bad])
+                .is_err()
+        );
+        assert_eq!(p.next_id(), 2, "ids not consumed by the failed batch");
+        let r = p
+            .ingest(vec![unassigned(Kind::Exit { status: 2 })])
+            .unwrap();
+        assert_eq!((r.first_id, r.last_id), (2, 2));
+        assert_eq!(p.store().count().unwrap(), 2);
     }
 
     #[test]

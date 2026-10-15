@@ -31,7 +31,9 @@ impl Source {
 }
 
 /// One observed event. `id` is `0` until the pipeline assigns it on ingest.
+/// Unknown fields are rejected: a newer shape must bump `SCHEMA_VERSION` (ADR-0004).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Event {
     pub schema_version: u32,
     pub id: u64,

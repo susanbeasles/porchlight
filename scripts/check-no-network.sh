@@ -16,7 +16,16 @@ if [[ -n "$hits" ]]; then
 fi
 
 deny='^(reqwest|hyper|hyper-util|h2|tokio|tokio-util|ureq|curl|curl-sys|native-tls|rustls|openssl|openssl-sys|mio|socket2|tungstenite|async-std|smol|isahc|attohttpc|minreq|trust-dns-resolver|hickory-resolver) '
-graph="$(cargo tree --workspace --edges normal --prefix none --locked 2>/dev/null | sort -u)"
+# Fail closed: a cargo error or an empty graph means nothing was inspected.
+if ! graph="$(cargo tree --workspace --all-features --edges normal --prefix none --locked)"; then
+  echo "check-no-network: cargo tree failed; dependency graph not inspected"
+  rc=1
+  graph=""
+elif [[ -z "$graph" ]]; then
+  echo "check-no-network: cargo tree returned an empty graph"
+  rc=1
+fi
+graph="$(echo "$graph" | sort -u)"
 bad="$(echo "$graph" | grep -E "$deny" || true)"
 if [[ -n "$bad" ]]; then
   echo "check-no-network: network crate in the dependency graph:"

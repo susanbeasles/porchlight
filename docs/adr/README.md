@@ -9,3 +9,4 @@ contract says what it says, or answers one of its open questions.
 | [0001](0001-rust-core-swift-connectors.md) | Rust core, C shim for Endpoint Security, Swift container app | proposed |
 | [0002](0002-fixture-ingress-eslogger.md) | Fixture ingress format is eslogger NDJSON first | proposed |
 | [0003](0003-minimum-macos-26.md) | Minimum macOS 26 | proposed |
+| [0004](0004-m1-schema-and-ingest-decisions.md) | M1 schema and ingest decisions | proposed |

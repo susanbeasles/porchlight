@@ -10,6 +10,7 @@ use super::time::WallTime;
 /// `audit_token_t` decomposed. Equality, ordering and hashing use `(pid, pidversion)` only;
 /// the credential fields are data carried along with the identity.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuditToken {
     pub pid: i32,
     pub pidversion: i32,
@@ -63,6 +64,7 @@ impl fmt::Display for AuditToken {
 
 /// Everything ES tells us about a process image (SPEC §3.1).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProcessIdentity {
     pub token: AuditToken,
     pub parent_token: AuditToken,

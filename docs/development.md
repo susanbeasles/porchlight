@@ -61,8 +61,9 @@ See SPEC.md §2. In M1 the workspace holds two crates:
 - `crates/porchlight-core`: schema, ingest, store, pipeline, reserved v1 interfaces.
 - `crates/porchlightctl`: the CLI.
 
-Features on `porchlight-core`: `store` and `pipeline` (default). The extension will link with
-`default-features = false` so the privileged process carries no SQLite.
+Features on `porchlight-core`: `schema` (default), `store`, `pipeline`. The default is schema
+only so the privileged extension carries no SQLite; `porchlightctl` enables `pipeline`
+(ADR-0004).
 
 ## Determinism rules (C7)
 

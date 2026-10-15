@@ -20,8 +20,8 @@ porchlightctl <command> [options]
 Commands:
   replay <fixture.ndjson> [--db <path>] [--dump <out.ndjson>] [--batch <n>] [--strict]
       Run the pipeline headlessly over an eslogger or porchlight NDJSON fixture.
-      Without --db the store is in memory. --dump writes the canonical event dump after
-      ingest. --strict exits 2 when any line was malformed.
+      Without --db the store is in memory. --dump writes the events this run ingested as
+      canonical NDJSON. --batch is 1..=65536. --strict exits 2 when any line was malformed.
   dump --db <path> [--from <id>] [--to <id>] [--out <file>]
       Write events as canonical NDJSON, one per line, in id order.
   verify-db --db <path>
@@ -37,6 +37,8 @@ Commands:
 
 /// Batch size for replay ingest. Matches the extension's XPC batch ceiling (SPEC §4.6).
 const DEFAULT_BATCH: usize = 512;
+/// Upper bound for `--batch`; one SQLite transaction per batch.
+const MAX_BATCH: u64 = 65_536;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -152,25 +154,13 @@ fn write_dump(
     out: &mut dyn Write,
 ) -> Result<u64, Box<dyn std::error::Error>> {
     let mut written = 0_u64;
-    let mut failure: Option<io::Error> = None;
     store.for_each_event(from, to, |event| {
-        if failure.is_some() {
-            return Ok(());
-        }
         let line = event.to_json_line()?;
-        if let Err(e) = out
-            .write_all(line.as_bytes())
-            .and_then(|()| out.write_all(b"\n"))
-        {
-            failure = Some(e);
-        } else {
-            written += 1;
-        }
+        out.write_all(line.as_bytes())?;
+        out.write_all(b"\n")?;
+        written += 1;
         Ok(())
     })?;
-    if let Some(e) = failure {
-        return Err(e.into());
-    }
     out.flush()?;
     Ok(written)
 }
@@ -202,11 +192,14 @@ fn replay(args: &[String]) -> CliResult {
         .positional
         .first()
         .ok_or("replay: missing fixture path")?;
-    let batch_size = opts
-        .u64_value("batch")?
-        .map_or(DEFAULT_BATCH, |n| n.max(1) as usize);
+    let batch_size = match opts.u64_value("batch")? {
+        None => DEFAULT_BATCH,
+        Some(n) if (1..=MAX_BATCH).contains(&n) => n as usize,
+        Some(n) => return Err(format!("replay: --batch {n} is outside 1..={MAX_BATCH}").into()),
+    };
     let store = open_store(&opts)?;
     let mut pipeline = Pipeline::new(store)?;
+    let first_id_of_run = pipeline.next_id();
     let file = File::open(fixture).map_err(|e| format!("replay: open {fixture}: {e}"))?;
     let mut reader = NdjsonReader::new(BufReader::new(file));
     let mut batch = Vec::with_capacity(batch_size);
@@ -236,7 +229,7 @@ fn replay(args: &[String]) -> CliResult {
     let store = pipeline.into_store();
     if let Some(path) = opts.value("dump") {
         let mut out = BufWriter::new(File::create(path)?);
-        let n = write_dump(&store, 1, None, &mut out)?;
+        let n = write_dump(&store, first_id_of_run, None, &mut out)?;
         eprintln!("replay: wrote {n} events to {path}");
     }
     if opts.flag("strict") && stats.malformed > 0 {

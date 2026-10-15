@@ -186,6 +186,61 @@ fn strict_fails_on_malformed_and_reports_line() {
 }
 
 #[test]
+fn batch_out_of_range_is_a_usage_error_not_a_panic() {
+    let dir = temp_dir("batch");
+    let fixture = dir.join("f.ndjson");
+    let (text, _) = synth_fixture();
+    fs::write(
+        &fixture,
+        text.lines().take(3).collect::<Vec<_>>().join("\n"),
+    )
+    .unwrap();
+    for bad in ["0", "18446744073709551615"] {
+        let out = bin()
+            .args(["replay", fixture.to_str().unwrap(), "--batch", bad])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1), "--batch {bad}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("outside 1..=65536"));
+    }
+}
+
+#[test]
+fn dump_contains_only_this_runs_events() {
+    let dir = temp_dir("dumprun");
+    let fixture = dir.join("f.ndjson");
+    let (text, _) = synth_fixture();
+    let first: String = text.lines().take(5).map(|l| format!("{l}\n")).collect();
+    fs::write(&fixture, first).unwrap();
+    let db = dir.join("s.db");
+    let d1 = dir.join("d1.ndjson");
+    let d2 = dir.join("d2.ndjson");
+    run_replay(&fixture, &db, &d1);
+    run_replay(&fixture, &db, &d2);
+    let l1: Vec<String> = fs::read_to_string(&d1)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    let l2: Vec<String> = fs::read_to_string(&d2)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        l1.len(),
+        4,
+        "5 lines, the unmodified close (line 5) filtered"
+    );
+    assert_eq!(l2.len(), 4, "second dump excludes the first run's events");
+    assert!(
+        l2[0].starts_with(r#"{"schema_version":1,"id":5,"#),
+        "{}",
+        l2[0]
+    );
+}
+
+#[test]
 fn usage_and_unknown_command() {
     let none = bin().output().unwrap();
     assert_eq!(none.status.code(), Some(2));

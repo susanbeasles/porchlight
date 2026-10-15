@@ -67,6 +67,19 @@ fn u32_field(v: &Value, key: &str) -> u32 {
         .unwrap_or(0)
 }
 
+/// `uid_t` fields that ES wraps in a single-member union (`su.to_uid`, `sudo.from_uid`,
+/// `sudo.to_uid`) serialize as `{"uid": N}`; plain numbers are accepted too.
+fn uid_field(v: &Value, key: &str) -> u32 {
+    match v.get(key) {
+        Some(Value::Object(o)) => o
+            .get("uid")
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(0),
+        _ => u32_field(v, key),
+    }
+}
+
 fn i32_field(v: &Value, key: &str) -> i32 {
     i64_field(v, key)
         .and_then(|n| i32::try_from(n).ok())
@@ -376,16 +389,16 @@ fn map_kind(name: &str, e: &Value) -> Result<Option<Kind>, String> {
             signum: i32_field(e, "sig"),
         },
         "su" => Kind::Su {
-            from: u32_field(e, "from_uid"),
-            to: u32_field(e, "to_uid"),
+            from: uid_field(e, "from_uid"),
+            to: uid_field(e, "to_uid"),
             success: bool_field(e, "success"),
             shell: opt_string(e, "shell"),
         },
         "sudo" => Kind::Sudo {
             success: bool_field(e, "success"),
             command: opt_string(e, "command"),
-            from: u32_field(e, "from_uid"),
-            to: u32_field(e, "to_uid"),
+            from: uid_field(e, "from_uid"),
+            to: uid_field(e, "to_uid"),
         },
         "authentication" => Kind::Authentication {
             auth_type: vstr(e, "type"),
@@ -421,7 +434,7 @@ fn map_kind(name: &str, e: &Value) -> Result<Option<Kind>, String> {
             user: string(e, "username"),
         },
         n if n.starts_with("od_") => {
-            let user = ["user_name", "account_name", "group_name"]
+            let user = ["user_name", "account_name", "group_name", "record_name"]
                 .iter()
                 .map(|k| string(e, k))
                 .find(|s| !s.is_empty())
@@ -651,6 +664,46 @@ mod tests {
             Kind::LwSession {
                 action: "lock".to_owned(),
                 user: "u".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn su_and_sudo_read_union_uids() {
+        let ev = parse(r#"{"sudo":{"success":true,"has_from_uid":true,"from_uid":{"uid":501},"has_to_uid":true,"to_uid":{"uid":0},"command":"id"}}"#).unwrap();
+        assert_eq!(
+            ev.kind,
+            Kind::Sudo {
+                success: true,
+                command: Some("id".to_owned()),
+                from: 501,
+                to: 0
+            }
+        );
+        let ev = parse(
+            r#"{"su":{"success":true,"from_uid":501,"to_uid":{"uid":0},"shell":"/bin/zsh"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            ev.kind,
+            Kind::Su {
+                from: 501,
+                to: 0,
+                success: true,
+                shell: Some("/bin/zsh".to_owned())
+            }
+        );
+    }
+
+    #[test]
+    fn od_attribute_events_take_record_name() {
+        let ev = parse(r#"{"od_attribute_set":{"record_type":0,"record_name":"bob","attribute_name":"AuthenticationAuthority","node_name":"/Local/Default"}}"#).unwrap();
+        assert_eq!(
+            ev.kind,
+            Kind::OdEvent {
+                action: "attribute_set".to_owned(),
+                user: "bob".to_owned(),
+                node: "/Local/Default".to_owned()
             }
         );
     }

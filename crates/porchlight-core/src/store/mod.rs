@@ -4,7 +4,9 @@
 use std::fmt;
 use std::path::Path;
 
-use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
+use rusqlite::{
+    Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
+};
 
 use crate::schema::{DropReason, Event, Kind};
 
@@ -21,6 +23,8 @@ pub enum StoreError {
     Sqlite(rusqlite::Error),
     Json(serde_json::Error),
     Migration(String),
+    /// An I/O error raised by a caller's callback, e.g. a closed pipe while dumping.
+    Io(std::io::Error),
     /// Ids must be contiguous and strictly increasing from the persisted high-water mark.
     IdOrder {
         expected: u64,
@@ -36,6 +40,7 @@ impl fmt::Display for StoreError {
             StoreError::Sqlite(e) => write!(f, "sqlite: {e}"),
             StoreError::Json(e) => write!(f, "json: {e}"),
             StoreError::Migration(m) => write!(f, "migration: {m}"),
+            StoreError::Io(e) => write!(f, "io: {e}"),
             StoreError::IdOrder { expected, got } => {
                 write!(f, "event id order: expected {expected}, got {got}")
             }
@@ -49,6 +54,12 @@ impl std::error::Error for StoreError {}
 impl From<rusqlite::Error> for StoreError {
     fn from(e: rusqlite::Error) -> Self {
         StoreError::Sqlite(e)
+    }
+}
+
+impl From<std::io::Error> for StoreError {
+    fn from(e: std::io::Error) -> Self {
+        StoreError::Io(e)
     }
 }
 
@@ -203,7 +214,11 @@ impl EventStore {
         if events.is_empty() {
             return Ok(());
         }
-        let tx = self.conn.transaction()?;
+        // IMMEDIATE takes the write lock before reading the high-water mark, so a second
+        // writer waits on the busy handler instead of failing with BUSY_SNAPSHOT.
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut high_water = Self::meta_get(&tx, META_HIGH_WATER)?
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(0);
@@ -318,7 +333,8 @@ impl EventStore {
             }
         };
         let mut stmt = self.conn.prepare(
-            "SELECT id, kind, process_token, parent_token, mach_time, json FROM events ORDER BY id",
+            "SELECT id, kind, process_token, parent_token, mach_time, wall_time, json \
+             FROM events ORDER BY id",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok((
@@ -327,13 +343,14 @@ impl EventStore {
                 r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?,
                 from_db(r.get::<_, i64>(4)?),
-                r.get::<_, String>(5)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, String>(6)?,
             ))
         })?;
         let mut expected = 1_u64;
         let mut last_id = 0_u64;
         for row in rows {
-            let (id, kind, process_token, parent_token, mach_time, json) = row?;
+            let (id, kind, process_token, parent_token, mach_time, wall_time, json) = row?;
             if id != expected {
                 push(
                     &mut report,
@@ -344,6 +361,12 @@ impl EventStore {
             last_id = id;
             match serde_json::from_str::<Event>(&json) {
                 Ok(event) => {
+                    if event.wall_time.0 != wall_time {
+                        push(
+                            &mut report,
+                            format!("event {id}: wall_time column mismatch"),
+                        );
+                    }
                     if event.id != id {
                         push(&mut report, format!("event {id}: json id is {}", event.id));
                     }
@@ -412,6 +435,8 @@ mod tests {
     fn temp_db(name: &str) -> std::path::PathBuf {
         let dir =
             std::env::temp_dir().join(format!("porchlight-store-{}-{name}", std::process::id()));
+        // Remove stale -wal/-shm siblings from an aborted earlier run with the same pid.
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("events.db")
     }
@@ -540,6 +565,39 @@ mod tests {
         tx.commit().unwrap();
         let err = store.migrate().unwrap_err();
         assert!(matches!(err, StoreError::Migration(_)));
+    }
+
+    #[test]
+    fn verify_checks_wall_time_column() {
+        let mut store = EventStore::open_in_memory().unwrap();
+        store.append(&[event(1, Kind::Exit { status: 0 })]).unwrap();
+        store
+            .conn
+            .execute("UPDATE events SET wall_time = 0 WHERE id = 1", [])
+            .unwrap();
+        let report = store.verify().unwrap();
+        assert!(
+            report.problems.iter().any(|p| p.contains("wall_time")),
+            "{report:?}"
+        );
+    }
+
+    #[test]
+    fn io_errors_short_circuit_iteration() {
+        let mut store = EventStore::open_in_memory().unwrap();
+        let batch: Vec<Event> = (1..=5)
+            .map(|i| event(i, Kind::Exit { status: 0 }))
+            .collect();
+        store.append(&batch).unwrap();
+        let mut calls = 0;
+        let err = store
+            .for_each_event(1, None, |_| {
+                calls += 1;
+                Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe).into())
+            })
+            .unwrap_err();
+        assert!(matches!(err, StoreError::Io(_)));
+        assert_eq!(calls, 1, "iteration stops at the first callback error");
     }
 
     #[test]

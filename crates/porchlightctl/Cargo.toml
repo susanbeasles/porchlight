@@ -13,7 +13,7 @@ name = "porchlightctl"
 path = "src/main.rs"
 
 [dependencies]
-porchlight-core.workspace = true
+porchlight-core = { workspace = true, features = ["pipeline"] }
 serde_json.workspace = true
 
 [lints]

@@ -7,7 +7,7 @@ use std::io::BufRead;
 use serde_json::Value;
 
 use super::eslogger;
-use crate::schema::{Event, Kind};
+use crate::schema::{Event, Kind, SCHEMA_VERSION};
 
 /// Which NDJSON dialect a fixture is in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,9 +81,17 @@ pub fn detect_format(line: &str) -> Result<Format, String> {
 /// Parses one line in the given dialect. `Ok(None)` means the line was filtered on purpose.
 pub fn parse_line(format: Format, line: &str) -> Result<Option<Event>, String> {
     match format {
-        Format::Porchlight => serde_json::from_str::<Event>(line)
-            .map(Some)
-            .map_err(|e| format!("porchlight event: {e}")),
+        Format::Porchlight => {
+            let event = serde_json::from_str::<Event>(line)
+                .map_err(|e| format!("porchlight event: {e}"))?;
+            if event.schema_version != SCHEMA_VERSION {
+                return Err(format!(
+                    "porchlight event schema_version {} (this build reads {SCHEMA_VERSION})",
+                    event.schema_version
+                ));
+            }
+            Ok(Some(event))
+        }
         Format::Eslogger => eslogger::parse_line(line),
     }
 }
@@ -96,6 +104,8 @@ pub struct NdjsonReader<R> {
     format: Option<Format>,
     stats: ReadStats,
     buf: String,
+    /// Set after an I/O error. A failing reader is not retried; iteration ends.
+    done: bool,
 }
 
 impl<R: BufRead> NdjsonReader<R> {
@@ -106,6 +116,7 @@ impl<R: BufRead> NdjsonReader<R> {
             format: None,
             stats: ReadStats::default(),
             buf: String::new(),
+            done: false,
         }
     }
 
@@ -141,12 +152,16 @@ impl<R: BufRead> Iterator for NdjsonReader<R> {
     type Item = Result<Event, LineError>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
         loop {
             self.buf.clear();
             match self.inner.read_line(&mut self.buf) {
                 Ok(0) => return None,
                 Ok(_) => {}
                 Err(e) => {
+                    self.done = true;
                     self.line_no += 1;
                     self.stats.malformed += 1;
                     return Some(Err(LineError {
@@ -269,6 +284,43 @@ mod tests {
         assert_eq!(stats.malformed, 1);
         assert_eq!(stats.by_kind.get("exit"), Some(&1));
         assert_eq!(stats.unsupported.get("x"), Some(&1));
+    }
+
+    #[test]
+    fn rejects_other_schema_versions() {
+        let line = porchlight_line(1, Kind::Exit { status: 0 }).replacen(
+            r#""schema_version":1"#,
+            r#""schema_version":99"#,
+            1,
+        );
+        let err = parse_line(Format::Porchlight, &line).unwrap_err();
+        assert!(err.contains("schema_version 99"), "{err}");
+    }
+
+    #[test]
+    fn rejects_unknown_fields() {
+        let line = porchlight_line(1, Kind::Exit { status: 0 }).replacen(
+            r#""id":1,"#,
+            r#""id":1,"surprise":true,"#,
+            1,
+        );
+        assert!(parse_line(Format::Porchlight, &line).is_err());
+    }
+
+    #[test]
+    fn read_error_ends_iteration() {
+        struct Failing;
+        impl std::io::Read for Failing {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("EIO"))
+            }
+        }
+        let mut reader = NdjsonReader::new(std::io::BufReader::new(Failing));
+        assert!(reader.next().unwrap().is_err());
+        assert!(
+            reader.next().is_none(),
+            "a failing reader must not be retried forever"
+        );
     }
 
     #[test]

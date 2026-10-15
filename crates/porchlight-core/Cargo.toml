@@ -9,8 +9,10 @@ repository.workspace = true
 publish.workspace = true
 
 [features]
-default = ["pipeline"]
-# The extension links this crate with default-features = false: schema and ingest only.
+# Default is schema and ingest only, so the privileged extension cannot pull in SQLite by
+# forgetting `default-features = false` (ADR-0001, ADR-0004). Tools opt into `pipeline`.
+default = ["schema"]
+schema = []
 store = ["dep:rusqlite"]
 pipeline = ["store"]
 
