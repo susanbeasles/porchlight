@@ -1,4 +1,4 @@
-# Linux CI: scripts/check on every PR and push to main (M1). Installed from docs/ci/rust.yml.
+# Linux CI: scripts/check on every PR and push to main (M1).
 name: Rust
 on:
   pull_request:
