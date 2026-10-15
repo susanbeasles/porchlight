@@ -1,7 +1,8 @@
 # cosign attest
 
 Composite action for keyless Sigstore signing and SLSA v1 provenance, out of band. It uses
-the job's GitHub OIDC identity and the official `sigstore/cosign-installer`, and it never
+the job's GitHub OIDC identity and cosign v3.1.3 installed from its release with a pinned SHA-256
+(`install-cosign.sh`, fail closed; no third-party action, per the account's Actions policy), and it never
 calls the GitHub attestations API. For each subject it writes two bundles next to the file:
 
 - `<file>.sigstore.json`: the `cosign sign-blob` signature bundle.
@@ -31,7 +32,6 @@ notes: [ADR-0008](../../docs/adr/0008-supply-chain-actions.md).
 | Input | Default | |
 |---|---|---|
 | `subjects` | required | Newline-separated files or globs. Each line must match at least one file |
-| `cosign-release` | `v3.1.3` | cosign version |
 | `predicate-type` | `slsaprovenance1` | `attest-blob --type` |
 | `certificate-identity` | this workflow at this ref | Set it when signing from a reusable workflow |
 | `checksums-file` | empty | Write `sha256  basename` per subject here and sign it as well |
