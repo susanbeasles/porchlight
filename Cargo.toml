@@ -1,0 +1,38 @@
+[workspace]
+resolver = "3"
+members = ["crates/porchlight-core", "crates/porchlightctl"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "Apache-2.0"
+repository = "https://github.com/susanbeasles/porchlight"
+publish = false
+
+[workspace.dependencies]
+porchlight-core = { path = "crates/porchlight-core" }
+# Exact pins. Cargo.lock checksums are the pin that matters (SPEC C8, ADR-0001).
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.154" }
+rusqlite = { version = "=0.40.2" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unimplemented = "deny"
+todo = "deny"
+dbg_macro = "deny"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+overflow-checks = true
+debug = "line-tables-only"

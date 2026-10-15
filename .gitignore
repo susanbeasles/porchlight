@@ -14,3 +14,7 @@
 
 
 .claude/settings.local.json
+/target/
+**/*.db
+**/*.db-wal
+**/*.db-shm
