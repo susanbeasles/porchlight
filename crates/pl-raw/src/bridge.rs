@@ -212,10 +212,10 @@ impl Bridge {
         if due && !self.pending.is_empty() {
             out.push(std::mem::take(&mut self.pending));
         }
+        // Leftovers after full batches keep the original `pending_since`: they arrived after
+        // it, so flushing at `since + BATCH_INTERVAL` still meets the 250 ms bound.
         if self.pending.is_empty() {
             self.pending_since = None;
-        } else if !out.is_empty() && due {
-            self.pending_since = Some(now);
         }
         self.stats.batches += out.len() as u64;
         out

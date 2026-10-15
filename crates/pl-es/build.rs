@@ -5,6 +5,8 @@ use std::path::PathBuf;
 
 fn main() {
     println!("cargo:rerun-if-changed=csrc");
+    // es_copy.c and es_shim.c include rawevent.h and ring.h: a layout change must rebuild.
+    println!("cargo:rerun-if-changed=../pl-raw/include");
     let target = std::env::var("TARGET").unwrap_or_default();
     let host = std::env::var("HOST").unwrap_or_default();
     if !target.contains("apple") {
@@ -26,6 +28,7 @@ fn main() {
         .file("csrc/es_selftest.c")
         .warnings(true)
         .extra_warnings(true)
+        .warnings_into_errors(true)
         .compile("pl_es_c");
     println!("cargo:rustc-link-lib=EndpointSecurity");
     println!("cargo:rustc-link-lib=bsm");

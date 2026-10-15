@@ -20,7 +20,7 @@ pub const PL_ERR_FAILED: i32 = -3;
 pub struct PlApp {
     pub(crate) core: Arc<Mutex<AppCore>>,
     #[cfg(target_os = "macos")]
-    pub(crate) client: Mutex<Option<crate::client::Client>>,
+    pub(crate) client: Mutex<Option<crate::client::ClientState>>,
 }
 
 pub(crate) fn lock(core: &Mutex<AppCore>) -> std::sync::MutexGuard<'_, AppCore> {

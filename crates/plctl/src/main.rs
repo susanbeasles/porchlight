@@ -296,7 +296,8 @@ fn processes(args: &[String]) -> CliResult {
             && !matches!(event.kind, pl_core::schema::Kind::Drop { .. });
         let is_replayed = event.source == pl_core::schema::Source::Replay;
         if is_es_message || is_replayed {
-            if last_global.is_some_and(|last| event.global_seq_num < last) {
+            // Same rule as the app's end-to-end check: a non-increasing global sequence.
+            if last_global.is_some_and(|last| event.global_seq_num <= last) {
                 live = LiveProcesses::new();
                 first_wall = None;
                 sessions += 1;

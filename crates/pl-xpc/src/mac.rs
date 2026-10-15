@@ -173,7 +173,7 @@ extern "C" fn on_msg(
     msg: *mut c_void,
 ) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: `ctx` is the leaked `Box<Ctx>` from `leak_ctx`, alive for the process.
+        // SAFETY: `ctx` is the leaked `Box<Ctx>` from `register`, alive for the process.
         let handler = unsafe { &*(ctx as *const Ctx) };
         // SAFETY: the shim passes a NUL-terminated op valid for this call.
         let op = unsafe { CStr::from_ptr(op) }.to_string_lossy();
@@ -199,27 +199,44 @@ extern "C" fn on_peer(ctx: *mut c_void, conn: *mut c_void, state: c_int) {
     }));
 }
 
-/// The handler lives as long as the XPC objects that call it: the process, in practice.
-fn leak_ctx(handler: Arc<dyn Handler>) -> *mut c_void {
-    Box::into_raw(Box::new(handler)) as *mut c_void
+/// A handler registered once for the life of the process. Copy it into every connection, so
+/// reconnecting allocates nothing that is never freed.
+#[derive(Clone, Copy)]
+pub struct HandlerRef(NonNull<c_void>);
+
+// SAFETY: points at a leaked `Box<Arc<dyn Handler>>`, and `Handler: Send + Sync`.
+unsafe impl Send for HandlerRef {}
+// SAFETY: as above; the pointee is never mutated after registration.
+unsafe impl Sync for HandlerRef {}
+
+/// Registers `handler` for the life of the process.
+pub fn register(handler: Arc<dyn Handler>) -> HandlerRef {
+    let leaked: &'static mut Ctx = Box::leak(Box::new(handler));
+    HandlerRef(NonNull::from(leaked).cast())
+}
+
+/// A code-signing requirement string, kept for the life of the process because the shim's
+/// blocks and XPC may hold the pointer. Create one per distinct requirement, not per attempt.
+#[derive(Clone, Copy)]
+pub struct Requirement(&'static CStr);
+
+impl Requirement {
+    pub fn new(requirement: &str) -> Option<Self> {
+        Some(Self(Box::leak(
+            CString::new(requirement).ok()?.into_boxed_c_str(),
+        )))
+    }
 }
 
 /// Publishes `service`; peers must satisfy `requirement`.
-pub fn listen(service: &str, requirement: &str, handler: Arc<dyn Handler>) -> Result<(), String> {
+pub fn listen(service: &str, requirement: Requirement, handler: HandlerRef) -> Result<(), String> {
     let service_c = CString::new(service).map_err(|e| e.to_string())?;
-    // The shim's blocks keep the requirement pointer for the life of the listener.
-    let requirement_c: &'static CStr = Box::leak(
-        CString::new(requirement)
-            .map_err(|e| e.to_string())?
-            .into_boxed_c_str(),
-    );
-    let ctx = leak_ctx(handler);
-    // SAFETY: strings are valid NUL-terminated C strings; `requirement_c` and `ctx` live forever.
+    // SAFETY: valid C strings; the requirement and the handler live for the process.
     let rc = unsafe {
         pl_xpc_listen(
             service_c.as_ptr(),
-            requirement_c.as_ptr(),
-            ctx,
+            requirement.0.as_ptr(),
+            handler.0.as_ptr(),
             on_msg,
             on_peer,
         )
@@ -234,20 +251,16 @@ pub fn listen(service: &str, requirement: &str, handler: Arc<dyn Handler>) -> Re
 /// Connects to a privileged mach service whose process must satisfy `requirement`.
 pub fn open_client(
     service: &str,
-    requirement: &str,
-    handler: Arc<dyn Handler>,
+    requirement: Requirement,
+    handler: HandlerRef,
 ) -> Option<Connection> {
     let service_c = CString::new(service).ok()?;
-    // Leaked like the listener's: no reliance on XPC copying the requirement string.
-    let requirement_c: &'static CStr =
-        Box::leak(CString::new(requirement).ok()?.into_boxed_c_str());
-    let ctx = leak_ctx(handler);
-    // SAFETY: valid C strings; `requirement_c` and `ctx` live for the process.
+    // SAFETY: valid C strings; the requirement and the handler live for the process.
     let ptr = unsafe {
         pl_xpc_connect(
             service_c.as_ptr(),
-            requirement_c.as_ptr(),
-            ctx,
+            requirement.0.as_ptr(),
+            handler.0.as_ptr(),
             on_msg,
             on_peer,
         )

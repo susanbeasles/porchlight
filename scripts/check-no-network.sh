@@ -8,7 +8,7 @@ rc=0
 
 pattern='URLSession|NWConnection|CFSocket|std::net::|tokio::net|reqwest|hyper::|ureq|curl_easy|libcurl|getaddrinfo|(^|[^A-Za-z0-9_])(connect|socket)\('
 hits="$(grep -rnE "$pattern" --include='*.rs' --include='*.swift' --include='*.c' --include='*.h' --include='*.m' crates apple 2>/dev/null \
-  | grep -vE '(^|/)tests/|_test\.rs:|/csrc/xpc_shim\.c:|^[^:]*:[0-9]+:\s*//' || true)"
+  | grep -vE '(^|/)tests/|_test\.rs:|^[^:]*:[0-9]+:\s*//' || true)"
 if [[ -n "$hits" ]]; then
   echo "check-no-network: network API reference in source:"
   echo "$hits"

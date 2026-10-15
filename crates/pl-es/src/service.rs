@@ -86,7 +86,10 @@ fn status_json(st: &State) -> Vec<u8> {
         ring_capacity: st.ring_capacity,
         producer_overlaps: st.producer_overlaps,
         queued_while_disconnected: st.outbox.queued() as u64,
-        bridge: st.bridge.clone(),
+        bridge: BridgeStats {
+            disconnected_drops: st.outbox.dropped_total(),
+            ..st.bridge.clone()
+        },
     };
     serde_json::to_vec(&status).unwrap_or_default()
 }

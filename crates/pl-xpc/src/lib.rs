@@ -15,4 +15,7 @@
 mod mac;
 
 #[cfg(target_os = "macos")]
-pub use mac::{ConnId, Connection, Handler, Msg, PeerEvent, listen, open_client};
+pub use mac::{
+    ConnId, Connection, Handler, HandlerRef, Msg, PeerEvent, Requirement, listen, open_client,
+    register,
+};

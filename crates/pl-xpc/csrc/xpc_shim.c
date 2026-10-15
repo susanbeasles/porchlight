@@ -38,6 +38,11 @@ int pl_xpc_listen(const char *service, const char *peer_requirement, void *ctx,
       }
       xpc_connection_t conn = (xpc_connection_t)peer;
       if (xpc_connection_set_peer_code_signing_requirement(conn, peer_requirement) != 0) {
+          /* libxpc requires a handler and activation before cancel. */
+          xpc_connection_set_event_handler(conn, ^(xpc_object_t ignored) {
+            (void)ignored;
+          });
+          xpc_connection_activate(conn);
           xpc_connection_cancel(conn);
           return;
       }
@@ -63,6 +68,12 @@ void *pl_xpc_connect(const char *service, const char *peer_requirement, void *ct
         return NULL;
     }
     if (xpc_connection_set_peer_code_signing_requirement(conn, peer_requirement) != 0) {
+        /* Releasing the last reference to an inactive connection is misuse: activate first. */
+        xpc_connection_set_event_handler(conn, ^(xpc_object_t ignored) {
+          (void)ignored;
+        });
+        xpc_connection_activate(conn);
+        xpc_connection_cancel(conn);
         xpc_release(conn);
         return NULL;
     }

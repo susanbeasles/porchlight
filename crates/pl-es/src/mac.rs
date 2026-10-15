@@ -68,8 +68,9 @@ fn bridge_loop(ring: &'static Ring, service: Arc<Service>, identity: ProcessIden
         for batch in bridge.take_ready(now) {
             service.deliver(batch);
         }
-        service.update_stats(bridge.stats(), ring.producer_overlaps());
-        if n == 0 {
+        if n > 0 {
+            service.update_stats(bridge.stats(), ring.producer_overlaps());
+        } else {
             std::thread::sleep(Duration::from_millis(5));
         }
     }
@@ -89,8 +90,14 @@ pub fn run() -> ! {
     let identity = self_identity();
     let service = Arc::new(Service::new(identity.clone(), ring.capacity()));
 
-    if let Err(e) = pl_xpc::listen(MACH_SERVICE, &app_requirement(), service.clone()) {
-        log(2, &e);
+    match pl_xpc::Requirement::new(&app_requirement()) {
+        Some(requirement) => {
+            let handler = pl_xpc::register(service.clone());
+            if let Err(e) = pl_xpc::listen(MACH_SERVICE, requirement, handler) {
+                log(2, &e);
+            }
+        }
+        None => log(2, "invalid peer requirement string"),
     }
 
     // SAFETY: `ring` is a live pl_ring_t for the life of the process.
