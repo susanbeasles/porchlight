@@ -13,14 +13,14 @@ permissions: {}
 
 jobs:
   security:
-    uses: susanbeasles/workflow_depot/.github/workflows/security-assurance.yml@b605477b1441d16943343635fa4face5354c0230
+    uses: susanbeasles/workflow_depot/.github/workflows/security-assurance.yml@82786b05afce6aa76902a9d23ee8d86b2151ba59
     permissions:
       contents: read
       security-events: write   # CodeQL SARIF upload
       id-token: write          # evidence-sign job only (job-level in the reusable workflow)
     with:
       depot_repository: susanbeasles/workflow_depot
-      depot_ref: b605477b1441d16943343635fa4face5354c0230   # must equal the SHA in `uses:`
+      depot_ref: 82786b05afce6aa76902a9d23ee8d86b2151ba59   # must equal the SHA in `uses:`
       policy_profile: ci-baseline
       # Compiled-language CodeQL needs a build; without one SAST-CODEQL for Rust is unavailable.
       # Executes this repository's own code on a GitHub-hosted runner.
