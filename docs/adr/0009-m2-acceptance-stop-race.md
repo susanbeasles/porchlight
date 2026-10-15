@@ -47,3 +47,23 @@ The `untracked_in_window` check is unchanged.
 - The decision rests on reasoning about the timeline. The run that motivated it deleted its
   trace, by design, so pid 42957 was not identified directly. If `unverifiable` grows beyond
   one or two pids per run, revisit this.
+
+## Evidence: M2 acceptance
+
+On the owner's Mac, with SIP on and Full Disk Access granted to the terminal, a run of
+`scripts/accept-m2` at this branch (60 s window, slack 3 s) produced:
+
+| Measure | Result |
+|---|---|
+| Events | 996 (335 exec, 345 exit, 316 fork), 0 malformed, 0 filtered |
+| Tracked live at stop | 3 |
+| `missing_from_ps` | none |
+| `untracked_in_window` | none |
+| `unverifiable` | one pid, the predicted stopper |
+| Result | `agrees: true` |
+| `exec_pidversion_changed` | 335 of 335 |
+
+The last row answers SPEC §12: on this system, `exec` always changes `pidversion`.
+
+This accepts M2's pipeline criterion under ADR-0007. The live extension path waits for the
+Endpoint Security entitlement.
