@@ -330,8 +330,9 @@ she can act on it, the developer can too. The reverse is not true.
 
 ## Building
 
-Requires Xcode on Apple Silicon. During development the ES extension runs
-without the approved entitlement using the DTS-documented workaround; see
+Requires macOS 26, Xcode 26 and the pinned Rust toolchain (`rust-toolchain.toml`) on
+Apple Silicon. The core, the CLI and most tests also build on Linux. During development the
+ES extension runs without the approved entitlement using the DTS-documented workaround; see
 `docs/development.md` once it exists.
 
 ```sh
