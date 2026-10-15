@@ -18,3 +18,5 @@
 **/*.db
 **/*.db-wal
 **/*.db-shm
+/apple/Porchlight.xcodeproj/
+/build/

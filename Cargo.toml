@@ -1,6 +1,13 @@
 [workspace]
 resolver = "3"
-members = ["crates/porchlight-core", "crates/porchlightctl"]
+members = [
+  "crates/pl-core",
+  "crates/pl-raw",
+  "crates/pl-xpc",
+  "crates/pl-es",
+  "crates/pl-ffi",
+  "crates/plctl",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,11 +18,13 @@ repository = "https://github.com/susanbeasles/porchlight"
 publish = false
 
 [workspace.dependencies]
-porchlight-core = { path = "crates/porchlight-core" }
+pl-core = { path = "crates/pl-core", default-features = false }
+pl-raw = { path = "crates/pl-raw" }
 # Exact pins. Cargo.lock checksums are the pin that matters (SPEC C8, ADR-0001).
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.154" }
 rusqlite = { version = "=0.40.2" }
+cc = { version = "=1.8.0" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

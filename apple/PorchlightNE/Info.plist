@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- Reserved for the network extension (SPEC §0). Not a build target in v0. -->
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>dev.susanb.porchlight.networkextension</string>
+</dict>
+</plist>

@@ -11,7 +11,7 @@ sketch or extend an earlier ADR. They are recorded here rather than left in code
 
 ## Decisions
 
-1. **Porchlight dump is a replay dialect from M1.** `porchlightctl dump` writes canonical
+1. **Porchlight dump is a replay dialect from M1.** `plctl dump` writes canonical
    `Event` JSON, and `replay` reads it back. This is what makes the M1 acceptance test
    (byte-identical round trip) possible without a Mac. It is distinct from the `PLRawEvent`
    NDJSON that ADR-0002 schedules for M3; `replay` will then detect three dialects.
@@ -30,9 +30,9 @@ sketch or extend an earlier ADR. They are recorded here rather than left in code
    requires app-disconnected drops to be reported with a distinct reason.
 6. **`Kind::Unsupported { name }`.** Per ADR-0002, unmapped source events are kept and
    counted, never silently skipped.
-7. **`porchlight-core` defaults to schema only.** The `store` and `pipeline` features are
+7. **`pl-core` defaults to schema only.** The `store` and `pipeline` features are
    opt-in. The privileged extension (M2) therefore cannot link SQLite by forgetting
-   `default-features = false`. `porchlightctl` and the app FFI enable `pipeline`.
+   `default-features = false`. `plctl` and the app FFI enable `pipeline`.
 8. **Appends take the write lock first.** `EventStore::append` opens an `IMMEDIATE`
    transaction so a second writer waits on SQLite's busy handler instead of failing with
    `SQLITE_BUSY_SNAPSHOT` after reading a stale high-water mark.

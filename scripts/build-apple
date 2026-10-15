@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Builds Porchlight.app with the embedded Endpoint Security extension (macOS only).
+#   1. cargo builds pl-es (the extension executable) and pl-ffi (the app's static library)
+#   2. XcodeGen generates apple/Porchlight.xcodeproj from apple/project.yml
+#   3. xcodebuild bundles, embeds and signs
+# Usage: scripts/build-apple [Debug|Release]
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "build-apple: macOS only" >&2
+  exit 2
+fi
+for tool in cargo xcodegen xcodebuild; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "build-apple: $tool not found; see docs/development.md" >&2
+    exit 2
+  fi
+done
+config="${1:-Debug}"
+
+echo "== cargo (aarch64-apple-darwin, release)"
+cargo build --release --locked --target aarch64-apple-darwin -p pl-es -p pl-ffi
+
+echo "== xcodegen $(xcodegen --version 2>/dev/null | tail -n1)"
+xcodegen generate --spec apple/project.yml --project apple --quiet
+
+echo "== xcodebuild ($config)"
+xcodebuild -project apple/Porchlight.xcodeproj -target PorchlightApp -configuration "$config" \
+  SYMROOT="$PWD/build" build
+
+app="build/$config/Porchlight.app"
+ext="$app/Contents/Library/SystemExtensions/dev.susanb.porchlight.extension.systemextension"
+echo "== built $app"
+if [[ ! -d "$ext" ]]; then
+  echo "build-apple: extension not embedded at $ext" >&2
+  exit 1
+fi
+codesign --verify --strict --deep "$app" && echo "codesign: ok"

@@ -126,7 +126,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
-name = "porchlight-core"
+name = "pl-core"
 version = "0.1.0"
 dependencies = [
  "rusqlite",
@@ -135,10 +135,49 @@ dependencies = [
 ]
 
 [[package]]
-name = "porchlightctl"
+name = "pl-es"
 version = "0.1.0"
 dependencies = [
- "porchlight-core",
+ "cc",
+ "pl-core",
+ "pl-raw",
+ "pl-xpc",
+ "serde_json",
+]
+
+[[package]]
+name = "pl-ffi"
+version = "0.1.0"
+dependencies = [
+ "pl-core",
+ "pl-raw",
+ "pl-xpc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "pl-raw"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "pl-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "pl-xpc"
+version = "0.1.0"
+dependencies = [
+ "cc",
+]
+
+[[package]]
+name = "plctl"
+version = "0.1.0"
+dependencies = [
+ "pl-core",
  "serde_json",
 ]
 

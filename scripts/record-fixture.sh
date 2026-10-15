@@ -2,7 +2,7 @@
 # Record an eslogger fixture with Porchlight's exact notify event set (SPEC §4.2, §7).
 # macOS only. The terminal running this needs Full Disk Access, or eslogger prints nothing.
 # Usage: scripts/record-fixture.sh <out.ndjson> [duration-seconds]
-# The event list below must match porchlight-core's ES_NOTIFY_EVENT_NAMES; a test checks it.
+# The event list below must match pl-core's ES_NOTIFY_EVENT_NAMES; a test checks it.
 set -euo pipefail
 out="${1:?usage: record-fixture.sh <out.ndjson> [duration-seconds]}"
 duration="${2:-}"

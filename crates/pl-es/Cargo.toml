@@ -1,0 +1,39 @@
+[package]
+name = "pl-es"
+description = "The Endpoint Security system extension executable. macOS only; prints a message and exits elsewhere."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+build = "build.rs"
+links = "pl_es_c"
+
+[[bin]]
+name = "pl-es"
+path = "src/main.rs"
+
+[dependencies]
+pl-core = { workspace = true, features = ["schema"] }
+pl-raw.workspace = true
+pl-xpc = { path = "../pl-xpc" }
+serde_json.workspace = true
+
+[build-dependencies]
+cc.workspace = true
+
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unimplemented = "deny"
+todo = "deny"
+dbg_macro = "deny"

@@ -25,7 +25,7 @@ Facts that shape the decision:
 
 ## Decision
 
-1. **Core in Rust.** `porchlight-core` holds schema, store, graphs, inventory, cross-view
+1. **Core in Rust.** `pl-core` holds schema, store, graphs, inventory, cross-view
    logic, rules and pipeline. It has no Apple framework dependency and builds and tests on
    Linux. Cargo features (`schema`, `store`, `rules`, `pipeline`) let the extension link only
    the schema.
@@ -34,7 +34,7 @@ Facts that shape the decision:
    the AUTH prefix check and response, and pushes fixed-layout `PLRawEvent` records into
    `ring.c`. Rust (`bridge.rs`) drains the ring, converts to `Event`, tracks sequence gaps,
    emits `drop` events, batches and sends over XPC. `PLRawEvent` and the ring live in
-   `porchlight-raw`, which has no ES dependency and is tested on Linux. The struct is
+   `pl-raw`, which has no ES dependency and is tested on Linux. The struct is
    mirrored as a `#[repr(C)]` Rust type with static size and offset assertions on both sides.
 3. **XPC is raw libxpc with a versioned dictionary protocol.** Plain libxpc functions are
    declared `extern "C"` from Rust. The two block-taking calls (listener and peer event
@@ -42,7 +42,7 @@ Facts that shape the decision:
    ID and the counterpart bundle identifier. The payload is JSON `[Event]`, the same encoding
    as fixtures. No NSXPC, no `NSSecureCoding`, no Objective-C runtime in the extension.
 4. **Swift is the container app only.** SwiftUI screens, extension activation and status,
-   System Settings and Finder actions. The app embeds `porchlight-ffi`, a Rust staticlib with
+   System Settings and Finder actions. The app embeds `pl-ffi`, a Rust staticlib with
    a hand-written C header and roughly ten functions exchanging JSON. Every FFI entry point
    catches unwinds and returns an error code; Rust panics never cross the boundary. The
    extension builds with `panic = "abort"`: a root process in an unknown state exits and is
@@ -55,7 +55,7 @@ Facts that shape the decision:
    and `SDKROOT` environment away from cargo entirely.
 6. **Determinism rule for C7.** No hash-map iteration order reaches serialization or any
    ordered output. Ordered maps or explicit sorts only. Enforced with a clippy
-   `disallowed_types` entry for `HashMap` and `HashSet` in `porchlight-core`.
+   `disallowed_types` entry for `HashMap` and `HashSet` in `pl-core`.
 7. **Dependencies.** Exact-version pins, committed `Cargo.lock`, pinned toolchain in
    `rust-toolchain.toml`. Initial set: `serde`, `serde_json`, `rusqlite` against the system
    SQLite. Additions are named in the PR that adds them. CI checks `cargo tree` against a

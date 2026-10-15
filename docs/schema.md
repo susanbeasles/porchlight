@@ -1,6 +1,6 @@
 # Event schema, version 1
 
-Normative source: `crates/porchlight-core/src/schema/`. This page is the human summary; a
+Normative source: `crates/pl-core/src/schema/`. This page is the human summary; a
 test fails if a kind discriminator is missing from it.
 
 ## Envelope
@@ -93,6 +93,17 @@ Each `kind` object carries `"type"` plus the fields listed. Field names follow S
 | `flow` | `reserved`. Never emitted in v0 |
 | `unsupported` | `name`: the source event name the adapter did not map |
 
+## Drop accounting
+
+A message the ring refused still consumed an Endpoint Security sequence number, so it is
+reported twice: once as `ring_full` (exact, from the ring's own counters) and once inside a
+`sequence_gap` for that event type. `sequence_gap` is the total loss for a type; `ring_full`
+says how much of it happened inside Porchlight. Never sum across reasons. `app_disconnected`
+counts events the extension discarded from its 10,000-event queue while no app was
+streaming; those never had a chance to reach the store.
+
+`drop` events are attributed to the extension's own process identity.
+
 ## Store columns
 
 `events(id, mach_time, wall_time, seq_num, global_seq_num, source, kind, process_token,
@@ -102,5 +113,5 @@ are `pid:pidversion`. The full event is in `json`. Indexes: `(kind, mach_time)`,
 
 ## Fixture dialects
 
-`porchlightctl replay` reads this format and `eslogger` output. Detection: a line with
+`plctl replay` reads this format and `eslogger` output. Detection: a line with
 `kind`, `source` and `process` is Porchlight; a line with `event` and `process` is eslogger.
