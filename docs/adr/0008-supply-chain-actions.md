@@ -122,9 +122,14 @@ before publishing, against the signed checksums, and after, against the registry
   `Edit(./.github/workflows/**)`.
 
 The final workflow contents therefore live in `docs/ci/`. `docs/ci/install-workflows.patch`
-adds them as `.github/workflows/release.yml` and `.github/workflows/deploy.yml`. The owner
-applies that patch. `docs/ci/` stays until the installed workflows are verified. Removing it
-and repointing references is a later change.
+adds them as `.github/workflows/release.yml` and `.github/workflows/deploy.yml`.
+
+At the owner's direction, and with the owner approving the command, the patch was applied in
+`ccbb4e0`. The installed files are byte-identical to `docs/ci/`, and `patch-sync.sh` enforces
+that.
+
+`docs/ci/` stays until the installed workflows are verified on GitHub. Removing it and
+repointing references is a later change.
 
 ## Acceptance
 
