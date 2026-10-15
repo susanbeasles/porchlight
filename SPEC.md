@@ -98,8 +98,8 @@ porchlight/
 │   │   ├── CoreBridge.swift            # Calls pl-ffi; JSON in, JSON out
 │   │   ├── Timeline/                   # Minimal UI
 │   │   └── Settings/
-│   ├── PorchlightExtension/            # Info.plist, entitlements, placeholder.c; the
-│   │                                   # executable is replaced by the cargo build before signing
+│   ├── PorchlightExtension/            # Info.plist, entitlements; no sources: the bundle's
+│   │                                   # executable is the cargo-built pl-es, copied before signing
 │   └── PorchlightNE/                   # Reserved. Info.plist only.
 ├── Rules/                              # Rule corpus (YAML), ATT&CK mapping JSON
 ├── Fixtures/                           # Human-recorded eslogger NDJSON + golden outputs

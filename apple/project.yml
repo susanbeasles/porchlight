@@ -25,9 +25,8 @@ targets:
   PorchlightExtension:
     type: system-extension
     platform: macOS
-    sources:
-      - path: PorchlightExtension
-        excludes: ["*.plist", "*.entitlements"]
+    # No sources on purpose: Xcode links nothing for this target, so the script below is the
+    # only producer of the executable (a compiled placeholder collided with it).
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.susanb.porchlight.extension
@@ -36,8 +35,8 @@ targets:
         CODE_SIGN_ENTITLEMENTS: PorchlightExtension/PorchlightExtension.entitlements
         SKIP_INSTALL: YES
     postBuildScripts:
-      # Replaces the placeholder executable with the cargo-built extension. Runs before
-      # Xcode's CodeSign step, so the Rust binary is what gets signed.
+      # Installs the cargo-built extension as the bundle's executable. Runs before Xcode's
+      # CodeSign step, so the Rust binary is what gets signed.
       - name: Install cargo-built pl-es
         script: |
           set -euo pipefail
@@ -47,6 +46,7 @@ targets:
             echo "error: $src not found; run scripts/build-apple, which builds it first"
             exit 1
           fi
+          mkdir -p "$(dirname "$dst")"
           cp -f "$src" "$dst"
         inputFiles:
           - $(PL_CARGO_OUT)/pl-es

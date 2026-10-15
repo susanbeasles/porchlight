@@ -72,46 +72,52 @@ is compiled only on a Mac.
 
 ## Running on a Mac (M2)
 
-Requirements: macOS 26 on Apple Silicon, Xcode 26, the pinned Rust toolchain, and XcodeGen
-(MIT; from its GitHub releases or Homebrew).
+Requirements: macOS 26 or later on Apple Silicon, full Xcode (not only the Command Line
+Tools; `xcode-select -p` must point into `Xcode.app`), the pinned Rust toolchain, and
+XcodeGen (MIT; `brew install xcodegen` or its GitHub releases).
+
+**Nothing in this project asks you to disable SIP** (ADR-0007). Until Apple grants the
+Endpoint Security entitlement, the extension cannot run live; everything else is validated
+with SIP on:
 
 ```sh
-scripts/build-apple            # cargo, then XcodeGen, then xcodebuild; Debug by default
-open build/Debug/Porchlight.app
+cargo test -p pl-es                  # C copy routine against hand-built es_message_t
+scripts/build-apple --no-sign        # C, Swift and link against the real SDK, unsigned
 ```
 
-Until Apple grants the Endpoint Security entitlement, the extension can only run with
-system-extension developer mode on a machine with SIP disabled. Do that in a macOS virtual
-machine, not on the Mac you use every day:
+Once the entitlement is granted, `scripts/build-apple` (signed) produces an installable app.
+Install it in `/Applications`, press **Install extension**, approve it in System Settings →
+General → Login Items & Extensions, and grant the extension Full Disk Access.
 
-1. Boot the VM to Recovery, run `csrutil disable`, restart.
-2. `systemextensionsctl developer on`
-3. Run the app from `/Applications` (copy it there) and press **Install extension**.
-4. Approve it in System Settings → General → Login Items & Extensions.
-5. Grant the extension Full Disk Access in System Settings → Privacy & Security.
-
-The Status screen shows the extension state, events recorded, running programs seen, and
-missed events. Logs: `log stream --predicate 'subsystem == "dev.susanb.porchlight.extension"'`.
-
-The copy self-test runs without any entitlement: `cargo test -p pl-es` on a Mac.
+Logs: `log stream --predicate 'subsystem == "dev.susanb.porchlight.extension"'`.
 
 ### M2 acceptance
 
-SPEC §9: after 60 seconds, `ps` and the process graph agree on running processes. With the
-extension streaming for at least a minute:
+SPEC §9: after 60 seconds, `ps` and the process graph agree on running processes.
+
+**Now, with SIP on, through `eslogger`.** Apple's `eslogger` produces the same exec, fork and
+exit stream the extension does; it needs Full Disk Access for the terminal only.
 
 ```sh
-cargo run -p plctl -- processes --db ~/Library/Application\ Support/dev.susanb.porchlight/events.db
+sudo eslogger exec fork exit > /tmp/m2.ndjson &
+sleep 60; sudo kill %1
+cargo run -p plctl -- replay /tmp/m2.ndjson --db /tmp/m2.db --strict
+cargo run -p plctl -- processes --db /tmp/m2.db
 ```
 
-It replays the store into the live-process set, runs `ps -axo pid=,etime=`, and compares
-the processes started since collection began (with a 3-second slack at both edges). Exit 0
-and `"agrees": true` is a pass. A process in `missing_from_ps` means an `exit` was missed;
-one in `untracked_in_window` means a `fork` or `exec` was. Processes older than the
-collection window are out of scope until M4 seeds the graph at startup.
+Run `processes` promptly: the collection window is measured up to the moment it runs. This
+exercises the adapter, the store, live-process tracking and the comparison; the extension's
+own path (ring, bridge, XPC) is exercised once the entitlement is granted, with the same
+command pointed at `~/Library/Application Support/dev.susanb.porchlight/events.db`.
+
+`processes` replays the store into the live-process set, runs `ps -axo pid=,etime=`, and
+compares the processes started since collection began (with a 3-second slack at both
+edges). Exit 0 and `"agrees": true` is a pass. A process in `missing_from_ps` means an `exit`
+was missed; one in `untracked_in_window` means a `fork` or `exec` was. Processes older than
+the collection window are out of scope until M4 seeds the graph at startup.
 
 Only the latest collection session is compared: a backwards step in the global sequence
-marks an extension restart, and `sessions_in_store` says how many the store holds.
+marks a restart, and `sessions_in_store` says how many the store holds.
 
 The report also answers SPEC §12's pidversion question: `live.exec_pidversion_changed`
 against `live.exec_pidversion_same`.
