@@ -32,8 +32,9 @@ for tool in cargo xcodegen xcodebuild; do
     exit 2
   fi
 done
-if [[ "$(xcode-select -p)" == *CommandLineTools* ]]; then
-  echo "build-apple: full Xcode is required; see docs/development.md" >&2
+# Honors DEVELOPER_DIR like xcodebuild itself; fails with only the Command Line Tools.
+if ! xcodebuild -version >/dev/null 2>&1; then
+  echo "build-apple: full Xcode is required (xcodebuild -version failed); see docs/development.md" >&2
   exit 2
 fi
 
@@ -59,7 +60,10 @@ if [[ ! -x "$exe" ]]; then
   echo "build-apple: extension executable missing at $exe" >&2
   exit 1
 fi
-if ! cmp -s "$exe" target/aarch64-apple-darwin/release/pl-es && [[ $sign -eq 0 ]]; then
+# Signing rewrites the file but not the Mach-O LC_UUID, so the UUID identifies the binary
+# in both modes.
+uuid() { dwarfdump --uuid "$1" | awk '{print $2}'; }
+if [[ "$(uuid "$exe")" != "$(uuid target/aarch64-apple-darwin/release/pl-es)" ]]; then
   echo "build-apple: embedded extension is not the cargo-built pl-es" >&2
   exit 1
 fi

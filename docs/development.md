@@ -99,16 +99,19 @@ SPEC §9: after 60 seconds, `ps` and the process graph agree on running processe
 exit stream the extension does; it needs Full Disk Access for the terminal only.
 
 ```sh
-sudo eslogger exec fork exit > /tmp/m2.ndjson &
-sleep 60; sudo kill %1
-cargo run -p plctl -- replay /tmp/m2.ndjson --db /tmp/m2.db --strict
-cargo run -p plctl -- processes --db /tmp/m2.db
+scripts/accept-m2          # 60 seconds; pass a number for longer
 ```
 
-Run `processes` promptly: the collection window is measured up to the moment it runs. This
-exercises the adapter, the store, live-process tracking and the comparison; the extension's
-own path (ring, bridge, XPC) is exercised once the entitlement is granted, with the same
-command pointed at `~/Library/Application Support/dev.susanb.porchlight/events.db`.
+It builds `plctl` first so nothing compiles during the measurement, asks for sudo up
+front, records, snapshots `ps` the instant recording stops, drops a partial last line,
+replays into a throwaway store, and prints the comparison. The trace contains every
+command line on the machine for that window, so it is kept in a private 0700 directory and
+deleted on exit. Only the JSON report is printed.
+
+This exercises the adapter, the store, live-process tracking and the comparison. The
+extension's own path (ring, bridge, XPC) is accepted once the entitlement is granted, by
+running `plctl processes --db ~/Library/Application\ Support/dev.susanb.porchlight/events.db`
+after the extension has streamed for a minute.
 
 `processes` replays the store into the live-process set, runs `ps -axo pid=,etime=`, and
 compares the processes started since collection began (with a 3-second slack at both

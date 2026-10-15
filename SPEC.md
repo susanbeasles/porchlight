@@ -110,6 +110,7 @@ porchlight/
 └── scripts/
     ├── check                           # fmt, clippy, test, no-network: the one entrypoint
     ├── build-apple                     # cargo, then XcodeGen, then xcodebuild (macOS)
+    ├── accept-m2                       # M2 acceptance via eslogger, SIP on (macOS)
     ├── spike-arm64e                    # Enhanced Security evidence for ADR-0006 (macOS)
     ├── record-fixture.sh               # Wraps eslogger with Porchlight's event set
     └── check-no-network.sh             # C1: source grep + cargo tree deny-list
@@ -677,6 +678,10 @@ dump.
 executable, `es_shim.c` with `EXEC/FORK/EXIT` only, ring, bridge, XPC both ways, app shows
 live event count. Resolves the arm64e / pointer-authentication build question for Rust with
 an ADR. Acceptance: `ps` output and the process graph agree on running processes after 60 s.
+Until Apple grants the Endpoint Security entitlement, the pipeline is accepted with SIP on
+through `eslogger` (`scripts/accept-m2`), and the live extension path is accepted once the
+entitlement arrives. No acceptance step requires disabling SIP (ADR-0007). The same applies
+to the M3 storm test and the M7 tamper test.
 
 **M3 — Full subscriptions, muting, ring, drops.** All events in §4.2, path muting, drop
 accounting, `CLOSE` filtering. Acceptance: under a synthetic file-write storm, drops are

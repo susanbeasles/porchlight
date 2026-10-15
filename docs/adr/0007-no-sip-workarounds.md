@@ -2,7 +2,7 @@
 
 Status: accepted (owner's decision)
 Date: 2026-10-15
-Amends: README "Building"; docs/development.md; ADR-0005
+Amends: README "Building"; docs/development.md; SPEC.md §9; ADR-0005, ADR-0006
 
 ## Context
 
@@ -21,8 +21,8 @@ Until the entitlement is granted, everything is validated with SIP on:
 
 - The C shims and copy routine: `cargo test -p pl-es` (no entitlement needed).
 - The Mac build: `scripts/build-apple --no-sign` (C, Swift and link against the real SDK).
-- The Rust pipeline and the M2 acceptance check: record with Apple's `eslogger` (Full Disk
-  Access for the terminal only), replay with `plctl replay`, compare with `plctl processes`.
+- The Rust pipeline and the M2 acceptance check: `scripts/accept-m2` records with Apple's
+  `eslogger` (Full Disk Access for the terminal only), replays, and compares with `ps`.
 
 What waits for the entitlement: the extension running live, its XPC link to the app, and
 self-protection (M7). With the granted entitlement and its provisioning profile, the

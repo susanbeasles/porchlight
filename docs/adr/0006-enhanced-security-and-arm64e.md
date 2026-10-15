@@ -1,6 +1,7 @@
 # ADR-0006: Enhanced Security (C9) and arm64e for Rust binaries
 
-Status: open, pending measurement on macOS 26 (owner runs `scripts/spike-arm64e`)
+Status: open, blocked on the Endpoint Security entitlement. The spike needs a signed
+build, and signing cannot succeed until Apple grants the entitlement (ADR-0007).
 Date: 2026-10-15
 Answers: SPEC.md §12 (arm64e question); C9
 

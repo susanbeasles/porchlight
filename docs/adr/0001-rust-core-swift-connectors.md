@@ -49,9 +49,9 @@ Facts that shape the decision:
    relaunched rather than continuing.
 5. **Cargo workspace replaces SwiftPM; cargo is never run from inside Xcode.** `scripts/check`
    builds the Rust targets first. The Xcode project owns bundling, `Info.plist` processing,
-   entitlements, provisioning and signing for both bundles. The extension target compiles a
-   placeholder `main.c`, and a script phase with declared inputs and outputs copies the
-   prebuilt Rust executable over it before signing. This keeps Xcode's user-script sandbox
+   entitlements, provisioning and signing for both bundles. The extension target has no sources;
+   a script phase with declared inputs and outputs copies the prebuilt Rust executable
+   into the bundle before signing (ADR-0005). This keeps Xcode's user-script sandbox
    and `SDKROOT` environment away from cargo entirely.
 6. **Determinism rule for C7.** No hash-map iteration order reaches serialization or any
    ordered output. Ordered maps or explicit sorts only. Enforced with a clippy
