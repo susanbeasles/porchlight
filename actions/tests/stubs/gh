@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Stateful stand-in for the GitHub CLI: just the calls the release actions make.
+set -euo pipefail
+S="${STUB_STATE:?}"; R="${GH_REPO:?}"
+args=" $* "
+url="https://github.com/$R/releases/tag"
+releases() { cat "$S/releases.json" 2>/dev/null || echo '[]'; }
+asset_json() {
+  local i=0 out='[]'
+  while IFS= read -r name; do
+    i=$((i + 1))
+    [[ -f "$S/assets/$name" ]] && out=$(jq --arg n "$name" --argjson i "$i" '. + [{id: $i, name: $n, state: "uploaded"}]' <<< "$out")
+  done < <(cat "$S/asset_ids" 2>/dev/null)
+  echo "$out"
+}
+case "$args" in
+  *" api repos/$R/git/ref/tags/"*)
+    [[ -f "$S/tag" ]] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+    echo "commit $(cat "$S/tag")" ;;
+  *" api --paginate repos/$R/releases?per_page=100 "*) releases ;;
+  *" api -X POST repos/$R/releases "*)
+    tag=$(sed -E 's/.*tag_name=([^ ]+).*/\1/' <<< "$args"); target=$(sed -E 's/.*target_commitish=([^ ]+).*/\1/' <<< "$args")
+    releases | jq --arg t "$tag" --arg c "$target" '. + [{id: 101, draft: true, tag_name: $t, target_commitish: $c}]' > "$S/r.tmp"
+    mv "$S/r.tmp" "$S/releases.json"; echo 101 ;;
+  *" api --paginate repos/$R/releases/101/assets?per_page=100 "*) asset_json ;;
+  *" api -X PATCH repos/$R/releases/101 "*)
+    releases | jq '(.[] | select(.id == 101) | .draft) = false' > "$S/r.tmp" && mv "$S/r.tmp" "$S/releases.json"
+    [[ -f "$S/no_tag_on_publish" ]] || releases | jq -r '.[] | select(.id == 101) | .target_commitish' > "$S/tag"
+    echo "$url/$(releases | jq -r '.[] | select(.id == 101) | .tag_name')" ;;
+  *" api -X DELETE repos/$R/releases/assets/"*)
+    id="${args##*/assets/}"; id="${id%% *}"; rm -f "$S/assets/$(sed -n "${id}p" "$S/asset_ids")" ;;
+  *" api -H Accept: application/octet-stream repos/$R/releases/assets/"*)
+    id="${args##*/assets/}"; id="${id%% *}"; name=$(sed -n "${id}p" "$S/asset_ids")
+    cat "$S/assets/$name"; [[ -f "$S/tamper_download" ]] && echo tampered || true ;;
+  *" api repos/$R/releases/101 "*) releases | jq '.[] | select(.id == 101)' ;;
+  *" release upload "*)
+    mkdir -p "$S/assets"; shift 3
+    for f in "$@"; do
+      [[ "$f" == --clobber ]] && continue
+      n=$(basename "$f"); cp "$f" "$S/assets/$n"
+      grep -qxF "$n" "$S/asset_ids" 2>/dev/null || echo "$n" >> "$S/asset_ids"
+    done ;;
+  *" release view "*)
+    releases | jq --arg t "$3" '.[] | select(.tag_name == $t) | {isDraft: .draft, tagName: .tag_name, targetCommitish: .target_commitish}' ;;
+  *" release download "*) dir="${args##* --dir }"; dir="${dir%% *}"; cp "$S"/assets/* "$dir"/ ;;
+  *) echo "gh stub: unhandled: $*" >&2; exit 2 ;;
+esac

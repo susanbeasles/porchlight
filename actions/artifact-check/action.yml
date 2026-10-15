@@ -1,0 +1,37 @@
+name: artifact check
+description: >
+  Checks a job-to-job handoff of the sealed npm tarball: the tarball's sha256 equals the
+  digest the build job recorded, and (when signed) the directory holds exactly the tarball,
+  SHA256SUMS and their four bundles, with SHA256SUMS listing only that tarball at that
+  digest. Keeps the build-once contract across privilege boundaries (ADR-0008).
+
+inputs:
+  dir:
+    description: Directory the artifact was downloaded into.
+    required: true
+  tarball:
+    description: Tarball file name (no directory).
+    required: true
+  sha256:
+    description: sha256 the build job recorded for the tarball.
+    required: true
+  signed:
+    description: "'true' when the directory must also hold SHA256SUMS and the bundles."
+    default: "false"
+
+outputs:
+  files:
+    description: Newline-separated absolute paths of every file in the handoff.
+    value: ${{ steps.check.outputs.files }}
+
+runs:
+  using: composite
+  steps:
+    - id: check
+      shell: bash
+      env:
+        DIR: ${{ inputs.dir }}
+        TARBALL: ${{ inputs.tarball }}
+        SHA256: ${{ inputs.sha256 }}
+        SIGNED: ${{ inputs.signed }}
+      run: bash "$GITHUB_ACTION_PATH/check.sh"

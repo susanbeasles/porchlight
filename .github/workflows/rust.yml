@@ -1,4 +1,4 @@
-# Proposed .github/workflows/rust.yml. Workflow files are human-owned; copy this there.
+# Linux CI: scripts/check on every PR and push to main (M1).
 name: Rust
 on:
   pull_request:

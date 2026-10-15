@@ -1,0 +1,79 @@
+name: cosign attest
+description: >
+  Keyless Sigstore signing and SLSA v1 provenance for files, out of band: cosign signs with
+  the job's GitHub OIDC identity, optionally writes and signs a SHA256SUMS file, writes
+  .sigstore.json bundles next to each file, and verifies them before returning. Does not
+  use the GitHub attestations API.
+
+# Caller requirements (see README.md):
+#   permissions: { id-token: write }
+#   Signing records the file digest, repository and workflow in the public Rekor log.
+
+inputs:
+  subjects:
+    description: Newline-separated files or globs to sign. Every line must match at least one file.
+    required: true
+  cosign-release:
+    description: cosign version installed by sigstore/cosign-installer.
+    default: v3.1.3
+  predicate-type:
+    description: cosign attest-blob --type.
+    default: slsaprovenance1
+  certificate-identity:
+    description: >
+      Identity the bundles must verify against. Defaults to this workflow file at this ref
+      (https://github.com/$GITHUB_WORKFLOW_REF). Set it when signing from a reusable workflow.
+    default: ""
+  checksums-file:
+    description: >
+      Write "sha256  basename" for every subject to this path and sign it too. Subjects must
+      have distinct basenames. Empty skips it.
+    default: ""
+  verify-only:
+    description: >
+      "true" signs nothing: it only verifies the existing <file>.sigstore.json and
+      <file>.intoto.sigstore.json bundles of every subject. Needs no OIDC token.
+    default: "false"
+  allow-private-repo:
+    description: >
+      Sign from a private repository. The repository and workflow names become public in
+      Rekor, so this is refused unless set to "true".
+    default: "false"
+
+outputs:
+  bundles:
+    description: Newline-separated paths of every bundle written (signature and attestation).
+    value: ${{ steps.sign.outputs.bundles }}
+  files:
+    description: Newline-separated subjects, checksums file and bundles; everything to release.
+    value: ${{ steps.sign.outputs.files }}
+  certificate-identity:
+    description: The identity the bundles were verified against.
+    value: ${{ steps.sign.outputs.identity }}
+
+runs:
+  using: composite
+  steps:
+    - name: Preflight
+      shell: bash
+      env:
+        PRIVATE_REPO: ${{ github.event.repository.private }}
+        ALLOW_PRIVATE: ${{ inputs.allow-private-repo }}
+        VERIFY_ONLY: ${{ inputs.verify-only }}
+      run: bash "$GITHUB_ACTION_PATH/preflight.sh"
+
+    - name: Install cosign
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      with:
+        cosign-release: ${{ inputs.cosign-release }}
+
+    - name: Sign, attest and verify
+      id: sign
+      shell: bash
+      env:
+        SUBJECTS: ${{ inputs.subjects }}
+        PREDICATE_TYPE: ${{ inputs.predicate-type }}
+        IDENTITY: ${{ inputs.certificate-identity }}
+        CHECKSUMS_FILE: ${{ inputs.checksums-file }}
+        VERIFY_ONLY: ${{ inputs.verify-only }}
+      run: bash "$GITHUB_ACTION_PATH/sign.sh"

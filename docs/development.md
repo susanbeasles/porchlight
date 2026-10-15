@@ -72,46 +72,64 @@ is compiled only on a Mac.
 
 ## Running on a Mac (M2)
 
-Requirements: macOS 26 on Apple Silicon, Xcode 26, the pinned Rust toolchain, and XcodeGen
-(MIT; from its GitHub releases or Homebrew).
+Requirements: macOS 26 or later on Apple Silicon, full Xcode (not only the Command Line
+Tools; `xcode-select -p` must point into `Xcode.app`), the pinned Rust toolchain, and
+XcodeGen (MIT; `brew install xcodegen` or its GitHub releases).
+
+**Nothing in this project asks you to disable SIP** (ADR-0007). Until Apple grants the
+Endpoint Security entitlement, the extension cannot run live; everything else is validated
+with SIP on:
 
 ```sh
-scripts/build-apple            # cargo, then XcodeGen, then xcodebuild; Debug by default
-open build/Debug/Porchlight.app
+cargo test -p pl-es                  # C copy routine against hand-built es_message_t
+scripts/build-apple --no-sign        # C, Swift and link against the real SDK, unsigned
 ```
 
-Until Apple grants the Endpoint Security entitlement, the extension can only run with
-system-extension developer mode on a machine with SIP disabled. Do that in a macOS virtual
-machine, not on the Mac you use every day:
+Once the entitlement is granted, `scripts/build-apple` (signed) produces an installable app.
+Install it in `/Applications`, press **Install extension**, approve it in System Settings →
+General → Login Items & Extensions, and grant the extension Full Disk Access.
 
-1. Boot the VM to Recovery, run `csrutil disable`, restart.
-2. `systemextensionsctl developer on`
-3. Run the app from `/Applications` (copy it there) and press **Install extension**.
-4. Approve it in System Settings → General → Login Items & Extensions.
-5. Grant the extension Full Disk Access in System Settings → Privacy & Security.
-
-The Status screen shows the extension state, events recorded, running programs seen, and
-missed events. Logs: `log stream --predicate 'subsystem == "dev.susanb.porchlight.extension"'`.
-
-The copy self-test runs without any entitlement: `cargo test -p pl-es` on a Mac.
+Logs: `log stream --predicate 'subsystem == "dev.susanb.porchlight.extension"'`.
 
 ### M2 acceptance
 
-SPEC §9: after 60 seconds, `ps` and the process graph agree on running processes. With the
-extension streaming for at least a minute:
+SPEC §9: after 60 seconds, `ps` and the process graph agree on running processes.
+
+**Now, with SIP on, through `eslogger`.** Apple's `eslogger` produces the same exec, fork and
+exit stream the extension does. macOS attributes its ES client to the app that launched
+the shell, so that app needs Full Disk Access, or `eslogger` fails with
+`ES_NEW_CLIENT_RESULT_ERR_NOT_PERMITTED`:
+
+1. System Settings → Privacy & Security → Full Disk Access → enable your terminal app.
+2. Quit the app completely and reopen it. TCC applies at launch, so a new tab or window is
+   not enough. In tmux, start a new tmux server from the reopened app.
+3. Turn the grant off when acceptance is done. Full Disk Access is broad. If you prefer, grant
+   it only to a terminal you use just for this, such as Terminal.app, and keep your everyday
+   terminal without it.
 
 ```sh
-cargo run -p plctl -- processes --db ~/Library/Application\ Support/dev.susanb.porchlight/events.db
+scripts/accept-m2          # 60 seconds; pass a number for longer
 ```
 
-It replays the store into the live-process set, runs `ps -axo pid=,etime=`, and compares
-the processes started since collection began (with a 3-second slack at both edges). Exit 0
-and `"agrees": true` is a pass. A process in `missing_from_ps` means an `exit` was missed;
-one in `untracked_in_window` means a `fork` or `exec` was. Processes older than the
-collection window are out of scope until M4 seeds the graph at startup.
+It builds `plctl` first so nothing compiles during the measurement, asks for sudo up
+front, records (failing at once, with the app to grant, if `eslogger` stops early), snapshots `ps` the instant recording stops, drops a partial last line,
+replays into a throwaway store, and prints the comparison. The trace contains every
+command line on the machine for that window, so it is kept in a private 0700 directory and
+deleted on exit. Only the JSON report is printed.
+
+This exercises the adapter, the store, live-process tracking and the comparison. The
+extension's own path (ring, bridge, XPC) is accepted once the entitlement is granted, by
+running `plctl processes --db ~/Library/Application\ Support/dev.susanb.porchlight/events.db`
+after the extension has streamed for a minute.
+
+`processes` replays the store into the live-process set, runs `ps -axo pid=,etime=`, and
+compares the processes started since collection began (with a 3-second slack at both
+edges). Exit 0 and `"agrees": true` is a pass. A process in `missing_from_ps` means an `exit`
+was missed; one in `untracked_in_window` means a `fork` or `exec` was. Processes older than
+the collection window are out of scope until M4 seeds the graph at startup.
 
 Only the latest collection session is compared: a backwards step in the global sequence
-marks an extension restart, and `sessions_in_store` says how many the store holds.
+marks a restart, and `sessions_in_store` says how many the store holds.
 
 The report also answers SPEC §12's pidversion question: `live.exec_pidversion_changed`
 against `live.exec_pidversion_same`.
@@ -135,5 +153,38 @@ synthesize their own fixtures in a temporary directory.
 
 ## CI
 
-`docs/ci/rust.yml` is the GitHub Actions workflow for this milestone. Workflow files are a
-human-owned path in this repository; copy it to `.github/workflows/rust.yml` when merging M1.
+| Workflow | Runs | Does |
+|---|---|---|
+| `.github/workflows/rust.yml` | every PR, push to `main` | `scripts/check` on Linux: fmt, clippy, tests, no-network, the release-chain tests |
+| `.github/workflows/agent-guard.yml` | every PR, push to `main` | guard validation, hidden-Unicode scan, secret scan |
+| `.github/workflows/release.yml` | push to `main` | npm release chain; stops at a read-only gate until `release/npm.json` is enabled (ADR-0008) |
+| `.github/workflows/deploy.yml` | dispatched by `release.yml` | publishes a sealed release to npm (ADR-0008) |
+
+`.github/workflows/` is a protected path. Agents still maintain it. An agent writes there
+only when the owner has directed that change in the session, and the write goes through an
+approval prompt. CI on the PR then proves the change.
+
+## Who does what
+
+Agents do the work end to end:
+
+- code, tests, docs and ADRs;
+- branches, commits, pushes and PRs;
+- CI fixes and review responses;
+- release activation;
+- reading acceptance output and judging it against SPEC §9.
+
+The owner gives direction and approves. A step is the owner's only when no agent can hold the
+authority it needs:
+
+| Step | Why no agent can do it | What the agent does around it |
+|---|---|---|
+| Merge a milestone PR | Repository rule: the human merges M(n) before M(n+1) starts | Drives the PR to green and mergeable, then says it is ready |
+| Grant the terminal Full Disk Access for `scripts/accept-m2` | macOS TCC grants are made by a person in System Settings; nothing can grant them programmatically | The script fails fast and names the app. The agent reads the output and judges acceptance |
+| Type the sudo password for `eslogger` | Repository policy denies agents `sudo` | Builds everything beforehand, so the password is the only prompt |
+| Configure the npm trusted publisher | Bound to the owner's npm account and 2FA | States the exact values, then verifies them on the first deploy |
+| Apple entitlement and provisioning | Bound to the Apple Developer account | Keeps the build passing with `--no-sign` until they arrive |
+| Repository admin settings (the `npm` environment, release immutability) | Need admin permission, which the agent's GitHub App may not have | Attempts them through the API first; on refusal, reports the exact error and setting |
+
+Anything not in this table is an agent's job. A doc that tells the owner to copy, apply or
+run something outside this table is a bug.

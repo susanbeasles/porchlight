@@ -332,8 +332,9 @@ she can act on it, the developer can too. The reverse is not true.
 
 Requires macOS 26, Xcode 26 and the pinned Rust toolchain (`rust-toolchain.toml`) on
 Apple Silicon. The core, the CLI and most tests also build on Linux. During development the
-ES extension runs without the approved entitlement using the DTS-documented workaround; see
-`docs/development.md` once it exists.
+ES extension cannot run live until Apple grants the Endpoint Security entitlement; nothing
+here asks you to disable SIP. See `docs/development.md` for what can be validated meanwhile
+and ADR-0007 for why.
 
 ```sh
 git clone https://github.com/susanbeasles/porchlight

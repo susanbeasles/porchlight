@@ -25,9 +25,8 @@ targets:
   PorchlightExtension:
     type: system-extension
     platform: macOS
-    sources:
-      - path: PorchlightExtension
-        excludes: ["*.plist", "*.entitlements"]
+    # No sources on purpose: Xcode links nothing for this target, so the script below is the
+    # only producer of the executable (a compiled placeholder collided with it).
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.susanb.porchlight.extension
@@ -36,8 +35,8 @@ targets:
         CODE_SIGN_ENTITLEMENTS: PorchlightExtension/PorchlightExtension.entitlements
         SKIP_INSTALL: YES
     postBuildScripts:
-      # Replaces the placeholder executable with the cargo-built extension. Runs before
-      # Xcode's CodeSign step, so the Rust binary is what gets signed.
+      # Installs the cargo-built extension as the bundle's executable. Runs before Xcode's
+      # CodeSign step, so the Rust binary is what gets signed.
       - name: Install cargo-built pl-es
         script: |
           set -euo pipefail
@@ -47,6 +46,7 @@ targets:
             echo "error: $src not found; run scripts/build-apple, which builds it first"
             exit 1
           fi
+          mkdir -p "$(dirname "$dst")"
           cp -f "$src" "$dst"
         inputFiles:
           - $(PL_CARGO_OUT)/pl-es
@@ -60,8 +60,15 @@ targets:
       - path: PorchlightApp
         excludes: ["*.plist", "*.entitlements"]
     dependencies:
+      # Xcode's native "System Extensions" copy phase: products directory +
+      # $(SYSTEM_EXTENSIONS_FOLDER_PATH), code-signed on copy. A ditto script phase could not
+      # read the bundle's contents under the user-script sandbox.
       - target: PorchlightExtension
-        embed: false
+        embed: true
+        codeSign: true
+        copy:
+          destination: productsDirectory
+          subpath: $(SYSTEM_EXTENSIONS_FOLDER_PATH)
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.susanb.porchlight
@@ -73,18 +80,3 @@ targets:
         HEADER_SEARCH_PATHS: $(SRCROOT)/../crates/pl-ffi/include
         LIBRARY_SEARCH_PATHS: $(PL_CARGO_OUT)
         OTHER_LDFLAGS: ["-lpl_ffi", "-lsqlite3"]
-    postBuildScripts:
-      # System extensions live in Contents/Library/SystemExtensions. Copied before the app's
-      # CodeSign step; the extension bundle is already signed.
-      - name: Embed system extension
-        script: |
-          set -euo pipefail
-          name="dev.susanb.porchlight.extension.systemextension"
-          dest="${TARGET_BUILD_DIR}/${CONTENTS_FOLDER_PATH}/Library/SystemExtensions"
-          mkdir -p "$dest"
-          rm -rf "${dest:?}/${name}"
-          ditto "${BUILT_PRODUCTS_DIR}/${name}" "${dest}/${name}"
-        inputFiles:
-          - $(BUILT_PRODUCTS_DIR)/dev.susanb.porchlight.extension.systemextension
-        outputFiles:
-          - $(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Library/SystemExtensions/dev.susanb.porchlight.extension.systemextension

@@ -1,0 +1,39 @@
+name: release gate
+description: >
+  Reads release/npm.json, the single reviewed switch for the npm release chain. Outputs
+  enabled=false (and nothing else) while inactive. When active, validates the package
+  before anything is built and outputs its settings (ADR-0008).
+
+inputs:
+  config:
+    description: Activation file, relative to the repository root.
+    default: release/npm.json
+
+outputs:
+  enabled:
+    description: "'true' only when the activation file enables a valid package."
+    value: ${{ steps.gate.outputs.enabled }}
+  directory:
+    value: ${{ steps.gate.outputs.directory }}
+    description: Package directory.
+  name:
+    value: ${{ steps.gate.outputs.name }}
+    description: Package name, as in package.json.
+  entry:
+    value: ${{ steps.gate.outputs.entry }}
+    description: Bundle entry point, relative to directory.
+  out-file:
+    value: ${{ steps.gate.outputs.out-file }}
+    description: Bundle output, relative to directory.
+  max-bundle-bytes:
+    value: ${{ steps.gate.outputs.max-bundle-bytes }}
+    description: Bundle size budget.
+
+runs:
+  using: composite
+  steps:
+    - id: gate
+      shell: bash
+      env:
+        CONFIG: ${{ inputs.config }}
+      run: bash "$GITHUB_ACTION_PATH/gate.sh"

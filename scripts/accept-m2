@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# M2 acceptance with SIP on, through Apple's eslogger (ADR-0007). macOS only.
+#
+# Records exec/fork/exit for N seconds, snapshots `ps` the moment recording stops, replays
+# the trace into a throwaway store and compares (SPEC §9 M2). The trace holds every command
+# line on the machine for that window, so it lives in a private 0700 directory and is
+# deleted on exit; only the JSON report is printed.
+#
+# Usage: scripts/accept-m2 [seconds]   (default 60)
+set -euo pipefail
+cd "$(dirname "$0")/.."
+secs="${1:-60}"
+[[ "$secs" =~ ^[0-9]+$ ]] && (( secs >= 10 )) || { echo "accept-m2: seconds must be an integer >= 10" >&2; exit 2; }
+[[ "$(uname -s)" == "Darwin" ]] || { echo "accept-m2: macOS only" >&2; exit 2; }
+
+echo "== building plctl first, so nothing compiles during the measurement"
+cargo build --release --locked -p plctl
+plctl="$PWD/target/release/plctl"
+
+work="$(mktemp -d)"
+chmod 700 "$work"
+trap 'rm -rf "$work"' EXIT
+
+echo "== sudo, up front (eslogger needs root; a backgrounded sudo cannot prompt)"
+sudo -v
+
+# eslogger's ES client is attributed to the app that launched this shell, so that app needs
+# Full Disk Access. Named here so the fix is one click, not a hunt.
+case "${TERM_PROGRAM:-}" in
+  Apple_Terminal) app="Terminal" ;;
+  iTerm.app) app="iTerm" ;;
+  vscode) app="Visual Studio Code" ;;
+  ghostty) app="Ghostty" ;;
+  "") app="your terminal app" ;;
+  *) app="$TERM_PROGRAM" ;;
+esac
+fda_help() {
+  cat >&2 <<HELP
+accept-m2: eslogger stopped: $1
+  Fix: System Settings > Privacy & Security > Full Disk Access > enable "$app".
+  Then quit $app completely and reopen it (TCC applies at launch; a new tab is not enough).
+  In tmux, start a new tmux server from the reopened app. Turn the grant off after acceptance.
+HELP
+}
+
+echo "== recording exec/fork/exit for ${secs}s ($app needs Full Disk Access)"
+sudo eslogger exec fork exit > "$work/raw.ndjson" &
+rec=$!
+# Watch the recorder for the whole window: a refused or crashed ES client fails at once
+# instead of after a full minute. ps -p works on the root-owned child; kill -0 would not.
+start=$SECONDS
+while (( SECONDS - start < secs )); do
+  if ! ps -p "$rec" > /dev/null; then
+    wait "$rec" 2>/dev/null || true
+    if (( SECONDS - start < 3 )); then
+      fda_help "it exited at startup (see its error above)"
+    else
+      fda_help "it exited $(( SECONDS - start ))s into the ${secs}s window"
+    fi
+    exit 1
+  fi
+  sleep 1
+done
+# Stop first, then snapshot ps immediately: the window closes at the same instant on both
+# sides. sudo relays the signal to eslogger.
+sudo kill -TERM "$rec" 2>/dev/null || true
+wait "$rec" 2>/dev/null || true
+ps -axo pid=,etime= > "$work/ps.txt"
+
+# A killed writer can leave a partial last line; keep complete lines only.
+lines=$(wc -l < "$work/raw.ndjson" | tr -d ' ')
+if (( lines == 0 )); then
+  fda_help "it recorded nothing"
+  exit 1
+fi
+head -n "$lines" "$work/raw.ndjson" > "$work/m2.ndjson"
+echo "== recorded $lines events"
+
+"$plctl" replay "$work/m2.ndjson" --db "$work/m2.db" --strict
+"$plctl" processes --db "$work/m2.db" --ps-file "$work/ps.txt" --window-secs "$secs"

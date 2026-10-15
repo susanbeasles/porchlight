@@ -2,10 +2,25 @@
 # Builds Porchlight.app with the embedded Endpoint Security extension (macOS only).
 #   1. cargo builds pl-es (the extension executable) and pl-ffi (the app's static library)
 #   2. XcodeGen generates apple/Porchlight.xcodeproj from apple/project.yml
-#   3. xcodebuild bundles, embeds and signs
-# Usage: scripts/build-apple [Debug|Release]
+#   3. xcodebuild bundles, embeds and (unless --no-sign) signs
+#
+# Usage: scripts/build-apple [--no-sign] [Debug|Release]
+#
+# --no-sign proves the C, Swift and link against the real SDK without a provisioning
+# profile. Until Apple grants the Endpoint Security entitlement, signing cannot succeed:
+# Xcode cannot provision com.apple.developer.endpoint-security.client yet.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+sign=1
+config=Debug
+for arg in "$@"; do
+  case "$arg" in
+    --no-sign) sign=0 ;;
+    Debug|Release) config="$arg" ;;
+    *) echo "usage: scripts/build-apple [--no-sign] [Debug|Release]" >&2; exit 2 ;;
+  esac
+done
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "build-apple: macOS only" >&2
@@ -17,7 +32,11 @@ for tool in cargo xcodegen xcodebuild; do
     exit 2
   fi
 done
-config="${1:-Debug}"
+# Honors DEVELOPER_DIR like xcodebuild itself; fails with only the Command Line Tools.
+if ! xcodebuild -version >/dev/null 2>&1; then
+  echo "build-apple: full Xcode is required (xcodebuild -version failed); see docs/development.md" >&2
+  exit 2
+fi
 
 echo "== cargo (aarch64-apple-darwin, release)"
 cargo build --release --locked --target aarch64-apple-darwin -p pl-es -p pl-ffi
@@ -25,15 +44,32 @@ cargo build --release --locked --target aarch64-apple-darwin -p pl-es -p pl-ffi
 echo "== xcodegen $(xcodegen --version 2>/dev/null | tail -n1)"
 xcodegen generate --spec apple/project.yml --project apple --quiet
 
-echo "== xcodebuild ($config)"
+signing=(-allowProvisioningUpdates)
+if [[ $sign -eq 0 ]]; then
+  signing=(CODE_SIGNING_ALLOWED=NO)
+fi
+echo "== xcodebuild ($config, $([[ $sign -eq 1 ]] && echo signed || echo unsigned))"
 xcodebuild -project apple/Porchlight.xcodeproj -target PorchlightApp -configuration "$config" \
-  SYMROOT="$PWD/build" build
+  SYMROOT="$PWD/build" "${signing[@]}" build
 
 app="build/$config/Porchlight.app"
 ext="$app/Contents/Library/SystemExtensions/dev.susanb.porchlight.extension.systemextension"
+exe="$ext/Contents/MacOS/dev.susanb.porchlight.extension"
 echo "== built $app"
-if [[ ! -d "$ext" ]]; then
-  echo "build-apple: extension not embedded at $ext" >&2
+if [[ ! -x "$exe" ]]; then
+  echo "build-apple: extension executable missing at $exe" >&2
   exit 1
 fi
-codesign --verify --strict --deep "$app" && echo "codesign: ok"
+# Signing rewrites the file but not the Mach-O LC_UUID, so the UUID identifies the binary
+# in both modes.
+uuid() { dwarfdump --uuid "$1" | awk '{print $2}'; }
+if [[ "$(uuid "$exe")" != "$(uuid target/aarch64-apple-darwin/release/pl-es)" ]]; then
+  echo "build-apple: embedded extension is not the cargo-built pl-es" >&2
+  exit 1
+fi
+echo "extension executable: $(lipo -archs "$exe")"
+if [[ $sign -eq 1 ]]; then
+  codesign --verify --strict --deep "$app" && echo "codesign: ok"
+else
+  echo "codesign: skipped (--no-sign)"
+fi

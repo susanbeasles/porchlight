@@ -98,18 +98,29 @@ porchlight/
 │   │   ├── CoreBridge.swift            # Calls pl-ffi; JSON in, JSON out
 │   │   ├── Timeline/                   # Minimal UI
 │   │   └── Settings/
-│   ├── PorchlightExtension/            # Info.plist, entitlements, placeholder.c; the
-│   │                                   # executable is replaced by the cargo build before signing
+│   ├── PorchlightExtension/            # Info.plist, entitlements; no sources: the bundle's
+│   │                                   # executable is the cargo-built pl-es, copied before signing
 │   └── PorchlightNE/                   # Reserved. Info.plist only.
 ├── Rules/                              # Rule corpus (YAML), ATT&CK mapping JSON
 ├── Fixtures/                           # Human-recorded eslogger NDJSON + golden outputs
+├── actions/                            # Supply-chain slices S1, S2 (ADR-0008). CI only;
+│   ├── release-gate/                   # never part of the shipped app
+│   ├── npm-build/
+│   ├── artifact-check/
+│   ├── cosign-attest/
+│   ├── sealed-release/
+│   ├── npm-trusted-publish/
+│   └── tests/                          # Release chain end to end against gh/cosign/npm stubs
+├── release/npm.json                    # npm release activation; committed disabled
 ├── docs/
 │   ├── development.md
 │   ├── schema.md                       # Generated from schema doc comments
+│   ├── ci/                             # release.yml, deploy.yml + install-workflows.patch
 │   └── adr/                            # Architecture decision records
 └── scripts/
     ├── check                           # fmt, clippy, test, no-network: the one entrypoint
     ├── build-apple                     # cargo, then XcodeGen, then xcodebuild (macOS)
+    ├── accept-m2                       # M2 acceptance via eslogger, SIP on (macOS)
     ├── spike-arm64e                    # Enhanced Security evidence for ADR-0006 (macOS)
     ├── record-fixture.sh               # Wraps eslogger with Porchlight's event set
     └── check-no-network.sh             # C1: source grep + cargo tree deny-list
@@ -677,6 +688,10 @@ dump.
 executable, `es_shim.c` with `EXEC/FORK/EXIT` only, ring, bridge, XPC both ways, app shows
 live event count. Resolves the arm64e / pointer-authentication build question for Rust with
 an ADR. Acceptance: `ps` output and the process graph agree on running processes after 60 s.
+Until Apple grants the Endpoint Security entitlement, the pipeline is accepted with SIP on
+through `eslogger` (`scripts/accept-m2`), and the live extension path is accepted once the
+entitlement arrives. No acceptance step requires disabling SIP (ADR-0007). The same applies
+to the M3 storm test and the M7 tamper test.
 
 **M3 — Full subscriptions, muting, ring, drops.** All events in §4.2, path muting, drop
 accounting, `CLOSE` filtering. Acceptance: under a synthetic file-write storm, drops are
@@ -705,6 +720,44 @@ what to click.
 **M9 — Docs and release candidate.** `docs/development.md`, `docs/schema.md`, ADRs for
 every non-obvious decision (ring capacity, path-mute inversion, no `OPEN`, no network),
 notarized build, `v0.1.0` tag.
+
+### Supply-chain slices
+
+Slices are small, independent of the milestone order, and shippable on their own. They
+touch only `actions/` and `docs/`, never the product. See ADR-0008.
+
+**S1 — Sealed release.** `release.yml` runs on push to `main` and does nothing until a
+reviewed change sets `"enabled": true` in `release/npm.json` for a valid package.
+
+When enabled, its jobs run in order, each with only the authority it needs:
+
+1. **gate** (read): checks the activation.
+2. **build** (read only; no OIDC, no write): `npm ci --ignore-scripts`, an esbuild tree-shaken
+   minified bundle, a version from conventional commits, and one allow-listed tarball whose
+   sha256 is recorded.
+3. **sign** (OIDC only): checks the handoff digest, writes `SHA256SUMS`, then runs cosign
+   `sign-blob` and `attest-blob` for both files.
+4. **release** (contents write only): checks the handoff and verifies the bundles, then opens a
+   draft, uploads, reads every asset back and publishes. The tag appears only now.
+5. **dispatch** (actions write only): starts the deploy at the new tag.
+
+Acceptance:
+
+- offline, `actions/tests/run.sh` and `patch-sync.sh` in `scripts/check`;
+- live, the controlled checks listed in ADR-0008.
+
+**S2 — npm deploy.** `deploy.yml` runs only from `workflow_dispatch` at `refs/tags/<tag>`, in
+the `npm` environment. It re-checks the activation at the tag. It requires the input tag, the
+selected ref, the release target, the tag commit and the signed provenance to name one commit,
+and the tarball to carry the tagged version and the activated name. It then publishes those
+exact bytes through OIDC trusted publishing with npm provenance and confirms the registry's
+integrity.
+
+Acceptance:
+
+- offline, the same harness;
+- live, the first controlled deploy, with `npm audit signatures` passing and the registry
+  integrity matching the release asset.
 
 ---
 
