@@ -6,13 +6,18 @@ description: >
   OIDC trusted publishing with npm provenance. Builds nothing. Accepts no npm token.
 
 # Caller requirements (see README.md):
-#   on: workflow_dispatch, run at the release tag (gh workflow run --ref <tag>)
+#   on: workflow_dispatch only, run at the release tag (gh workflow run --ref <tag>)
 #   permissions: { contents: read, id-token: write }
 #   npm trusted publisher configured for this repository and the calling workflow file
 
 inputs:
   tag:
     description: Release tag to publish (v<major>.<minor>.<patch>). The run's ref must be this tag.
+    required: true
+  package-name:
+    description: >
+      The package name activated in release/npm.json at this tag (release-gate output).
+      The tarball must carry exactly this name.
     required: true
   signer-identity:
     description: >
@@ -83,6 +88,7 @@ runs:
         GH_REPO: ${{ github.repository }}
         TAG: ${{ inputs.tag }}
         IDENTITY: ${{ inputs.signer-identity }}
+        EXPECT_NAME: ${{ inputs.package-name }}
       run: bash "$GITHUB_ACTION_PATH/verify.sh"
 
     - name: Publish to npm (OIDC trusted publishing, provenance)

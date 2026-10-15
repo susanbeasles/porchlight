@@ -10,6 +10,8 @@ fi
 if [[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]]; then
   fail "No OIDC token available. Grant the job 'permissions: id-token: write'."
 fi
+[[ "${GITHUB_EVENT_NAME:-}" == "workflow_dispatch" ]] \
+  || fail "Deploy runs only from workflow_dispatch (got '${GITHUB_EVENT_NAME:-}')."
 [[ "${TAG:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "tag must be v<major>.<minor>.<patch>, got '${TAG:-}'"
 # npm provenance names this run's commit. Running at the tag makes that the released commit,
 # and the workflow and action code are the ones that were released with it.

@@ -1,17 +1,22 @@
 # Deploy: publish a sealed release to npm (ADR-0008). Dispatched by release.yml at the
-# release tag; run it by hand the same way to retry: gh workflow run deploy.yml --ref vX.Y.Z -f tag=vX.Y.Z
+# release tag. To retry: gh workflow run deploy.yml --ref vX.Y.Z -f tag=vX.Y.Z
 #
-# One-time setup on npmjs.com: package > Settings > Trusted publishing > GitHub Actions,
-# repository susanbeasles/porchlight, workflow file deploy.yml, environment npm. Then
-# "Require two-factor authentication and disallow tokens" and delete any automation tokens.
-# The npm environment's deployment rule must allow tags matching v*.
+# Refuses unless release/npm.json at the tag enables the package, the run is a dispatch at
+# refs/tags/<tag>, the published release and the tag both point at this commit, and the
+# release's SHA256SUMS, tarball signature and provenance verify against release.yml@main and
+# name this commit. Publishes those exact bytes through npm trusted publishing (OIDC) with
+# provenance and checks the registry's integrity equals them.
+#
+# One-time setup: npmjs.com trusted publisher for this repository, workflow deploy.yml,
+# environment npm; then disallow token publishing. The npm environment must allow tags v*;
+# add required reviewers for a human gate.
 name: deploy
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag (v<major>.<minor>.<patch>); also pick it as the ref
+        description: Release tag (v<major>.<minor>.<patch>); select the same tag as the ref
         required: true
         type: string
 
@@ -24,15 +29,22 @@ concurrency:
 jobs:
   npm:
     runs-on: ubuntu-24.04
-    environment: npm            # add required reviewers here for a human gate
+    environment: npm
     permissions:
       contents: read            # read the release
       id-token: write           # npm trusted publishing
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          persist-credentials: false   # the action code comes from the tag being deployed
-
+          persist-credentials: false   # action code and activation come from the tag
+      - id: gate
+        uses: ./actions/release-gate
+      - name: Require activation at this tag
+        if: steps.gate.outputs.enabled != 'true'
+        run: |
+          echo "::error title=deploy::release/npm.json at this tag does not enable an npm package"
+          exit 1
       - uses: ./actions/npm-trusted-publish
         with:
           tag: ${{ inputs.tag }}
+          package-name: ${{ steps.gate.outputs.name }}

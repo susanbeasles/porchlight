@@ -104,15 +104,18 @@ porchlight/
 ├── Rules/                              # Rule corpus (YAML), ATT&CK mapping JSON
 ├── Fixtures/                           # Human-recorded eslogger NDJSON + golden outputs
 ├── actions/                            # Supply-chain slices S1, S2 (ADR-0008). CI only;
-│   ├── npm-build/                      # never part of the shipped app
+│   ├── release-gate/                   # never part of the shipped app
+│   ├── npm-build/
+│   ├── artifact-check/
 │   ├── cosign-attest/
 │   ├── sealed-release/
 │   ├── npm-trusted-publish/
 │   └── tests/                          # Release chain end to end against gh/cosign/npm stubs
+├── release/npm.json                    # npm release activation; committed disabled
 ├── docs/
 │   ├── development.md
 │   ├── schema.md                       # Generated from schema doc comments
-│   ├── ci/                             # release.yml, deploy.yml; the owner copies them
+│   ├── ci/                             # release.yml, deploy.yml + install-workflows.patch
 │   └── adr/                            # Architecture decision records
 └── scripts/
     ├── check                           # fmt, clippy, test, no-network: the one entrypoint
@@ -723,23 +726,38 @@ notarized build, `v0.1.0` tag.
 Slices are small, independent of the milestone order, and shippable on their own. They
 touch only `actions/` and `docs/`, never the product. See ADR-0008.
 
-**S1 — Sealed release.** `docs/ci/release.yml` on every push to `main` with new commits:
-`actions/npm-build` (lockfile install without scripts, esbuild tree-shaken minified bundle
-with a size budget, version from conventional commits, one allow-listed tarball), then
-`actions/sealed-release` opens a draft, `actions/cosign-attest` writes `SHA256SUMS` and
-signs and attests it and the tarball, `sealed-release` uploads everything, downloads it
-back and checks every byte, publishes the release (the tag appears only now), and the job
-dispatches the deploy at that tag. Acceptance: `actions/tests/run.sh` in `scripts/check`;
-a real run produces a live release holding the tarball, `SHA256SUMS` and the four bundles.
+**S1 — Sealed release.** `release.yml` runs on push to `main` and does nothing until a
+reviewed change sets `"enabled": true` in `release/npm.json` for a valid package.
 
-**S2 — npm deploy.** `docs/ci/deploy.yml`, dispatched at the release tag:
-`actions/npm-trusted-publish` downloads the sealed release, verifies the `SHA256SUMS`
-signature, the checksums, the tarball's signature and SLSA provenance against the release
-workflow's identity, that the provenance names this commit and the tarball the tagged
-version, then publishes that tarball through OIDC trusted publishing with npm provenance
-and checks the registry's integrity equals the sealed bytes. Builds nothing. Acceptance:
-the same harness; a real run whose `npm audit signatures` passes and whose registry
-integrity matches the release asset.
+When enabled, its jobs run in order, each with only the authority it needs:
+
+1. **gate** (read): checks the activation.
+2. **build** (read only; no OIDC, no write): `npm ci --ignore-scripts`, an esbuild tree-shaken
+   minified bundle, a version from conventional commits, and one allow-listed tarball whose
+   sha256 is recorded.
+3. **sign** (OIDC only): checks the handoff digest, writes `SHA256SUMS`, then runs cosign
+   `sign-blob` and `attest-blob` for both files.
+4. **release** (contents write only): checks the handoff and verifies the bundles, then opens a
+   draft, uploads, reads every asset back and publishes. The tag appears only now.
+5. **dispatch** (actions write only): starts the deploy at the new tag.
+
+Acceptance:
+
+- offline, `actions/tests/run.sh` and `patch-sync.sh` in `scripts/check`;
+- live, the controlled checks listed in ADR-0008.
+
+**S2 — npm deploy.** `deploy.yml` runs only from `workflow_dispatch` at `refs/tags/<tag>`, in
+the `npm` environment. It re-checks the activation at the tag. It requires the input tag, the
+selected ref, the release target, the tag commit and the signed provenance to name one commit,
+and the tarball to carry the tagged version and the activated name. It then publishes those
+exact bytes through OIDC trusted publishing with npm provenance and confirms the registry's
+integrity.
+
+Acceptance:
+
+- offline, the same harness;
+- live, the first controlled deploy, with `npm audit signatures` passing and the registry
+  integrity matching the release asset.
 
 ---
 

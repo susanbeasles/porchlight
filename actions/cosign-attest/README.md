@@ -35,6 +35,7 @@ notes: [ADR-0008](../../docs/adr/0008-supply-chain-actions.md).
 | `predicate-type` | `slsaprovenance1` | `attest-blob --type` |
 | `certificate-identity` | this workflow at this ref | Set it when signing from a reusable workflow |
 | `checksums-file` | empty | Write `sha256  basename` per subject here and sign it as well |
+| `verify-only` | `false` | `true`: sign nothing; verify the existing two bundles of every subject. Needs no OIDC token |
 | `allow-private-repo` | `false` | See the Rekor note above |
 
 Outputs:
@@ -44,6 +45,24 @@ Outputs:
 
 Uploading is left to the caller. [`sealed-release`](../sealed-release) does it for the
 release chain.
+
+## Verify-only mode
+
+The release job in [`release.yml`](../../docs/ci/release.yml) holds `contents: write` but
+no OIDC token. Before anything becomes public, it re-verifies the bundles that the signing
+job produced:
+
+```yaml
+- uses: ./actions/cosign-attest
+  with:
+    verify-only: "true"
+    subjects: |
+      ${{ runner.temp }}/sealed/pkg.tgz
+      ${{ runner.temp }}/sealed/SHA256SUMS
+```
+
+The identity defaults to this workflow at this ref, which is the signing job's identity
+when both jobs are in the same workflow.
 
 ## Verify anywhere
 

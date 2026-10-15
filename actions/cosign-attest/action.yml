@@ -29,6 +29,11 @@ inputs:
       Write "sha256  basename" for every subject to this path and sign it too. Subjects must
       have distinct basenames. Empty skips it.
     default: ""
+  verify-only:
+    description: >
+      "true" signs nothing: it only verifies the existing <file>.sigstore.json and
+      <file>.intoto.sigstore.json bundles of every subject. Needs no OIDC token.
+    default: "false"
   allow-private-repo:
     description: >
       Sign from a private repository. The repository and workflow names become public in
@@ -54,6 +59,7 @@ runs:
       env:
         PRIVATE_REPO: ${{ github.event.repository.private }}
         ALLOW_PRIVATE: ${{ inputs.allow-private-repo }}
+        VERIFY_ONLY: ${{ inputs.verify-only }}
       run: bash "$GITHUB_ACTION_PATH/preflight.sh"
 
     - name: Install cosign
@@ -69,4 +75,5 @@ runs:
         PREDICATE_TYPE: ${{ inputs.predicate-type }}
         IDENTITY: ${{ inputs.certificate-identity }}
         CHECKSUMS_FILE: ${{ inputs.checksums-file }}
+        VERIFY_ONLY: ${{ inputs.verify-only }}
       run: bash "$GITHUB_ACTION_PATH/sign.sh"

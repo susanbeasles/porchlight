@@ -10,8 +10,16 @@ identity="${IDENTITY:-}"
 [[ -n "$identity" ]] || identity="https://github.com/${GITHUB_REPOSITORY:?}/.github/workflows/release.yml@refs/heads/main"
 version="${TAG#v}"
 
-draft=$(gh release view "$TAG" --json isDraft --jq .isDraft)
-[[ "$draft" == "false" ]] || fail "release $TAG is not published"
+[[ -n "${EXPECT_NAME:-}" ]] || fail "package-name is required"
+
+# The selected ref, the input tag, the release and the tag must all name this commit.
+rel=$(gh release view "$TAG" --json isDraft,tagName,targetCommitish)
+jq -e --arg t "$TAG" '.isDraft == false and .tagName == $t' <<< "$rel" > /dev/null \
+  || fail "release $TAG is not published: $(jq -c . <<< "$rel")"
+target=$(jq -r .targetCommitish <<< "$rel")
+[[ "$target" == "${GITHUB_SHA:?}" ]] || fail "release $TAG targets '$target', this run is at $GITHUB_SHA"
+tag_ref=$(gh api "repos/${GH_REPO:?}/git/ref/tags/$TAG" --jq '.object.type + " " + .object.sha')
+[[ "$tag_ref" == "commit $GITHUB_SHA" ]] || fail "tag $TAG is '$tag_ref', expected a lightweight tag at $GITHUB_SHA"
 
 dir="${RUNNER_TEMP:?}/sealed-release"
 rm -rf "$dir" && mkdir -p "$dir"
@@ -50,6 +58,7 @@ manifest=$(tar -xOzf "$tgz" package/package.json)
 pkg_version=$(jq -r .version <<< "$manifest")
 package=$(jq -r .name <<< "$manifest")
 [[ "$pkg_version" == "$version" ]] || fail "$tgz is version $pkg_version, release is $TAG"
+[[ "$package" == "$EXPECT_NAME" ]] || fail "$tgz is package '$package', activation names '$EXPECT_NAME'"
 
 echo "verify: $package@$version $(sha256sum "$tgz" | cut -d' ' -f1) signed by $identity, built from $GITHUB_SHA"
 {

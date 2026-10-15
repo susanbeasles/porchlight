@@ -30,6 +30,26 @@ done <<< "${SUBJECTS:-}"
 ((${#files[@]})) || fail "No subjects given."
 subjects=("${files[@]}")
 
+# Chained with &&: set -e is suspended inside a function called from an || list, so a
+# failed first check must not be masked by a passing second one.
+verify_pair() {
+  cosign verify-blob --bundle "$1.sigstore.json" \
+    --certificate-identity "$identity" --certificate-oidc-issuer "$issuer" "$1" &&
+  cosign verify-blob-attestation --bundle "$1.intoto.sigstore.json" --type "$PREDICATE_TYPE" \
+    --certificate-identity "$identity" --certificate-oidc-issuer "$issuer" "$1"
+}
+
+if [[ "${VERIFY_ONLY:-false}" == "true" ]]; then
+  [[ -z "${CHECKSUMS_FILE:-}" ]] || fail "checksums-file is for signing; list SHA256SUMS as a subject to verify it"
+  for f in "${files[@]}"; do
+    for b in "$f.sigstore.json" "$f.intoto.sigstore.json"; do [[ -f "$b" ]] || fail "missing bundle $b"; done
+    verify_pair "$f" || fail "bundles for $f do not verify against $identity"
+    echo "verified: $f"
+  done
+  echo "identity=$identity" >> "${GITHUB_OUTPUT:?}"
+  exit 0
+fi
+
 # SHA256SUMS over the subjects by basename, so it checks in any download directory.
 if [[ -n "${CHECKSUMS_FILE:-}" ]]; then
   dupes=$(for f in "${files[@]}"; do basename "$f"; done | sort | uniq -d)
@@ -93,10 +113,7 @@ for f in "${files[@]}"; do
   cosign sign-blob --yes --bundle "$sig" "$f"
   cosign attest-blob --yes --predicate "$predicate" --type "$PREDICATE_TYPE" --bundle "$att" "$f"
   # Fail closed: a bundle that does not verify against this exact identity is never returned.
-  cosign verify-blob --bundle "$sig" \
-    --certificate-identity "$identity" --certificate-oidc-issuer "$issuer" "$f"
-  cosign verify-blob-attestation --bundle "$att" --type "$PREDICATE_TYPE" \
-    --certificate-identity "$identity" --certificate-oidc-issuer "$issuer" "$f"
+  verify_pair "$f"
   echo "::endgroup::"
   bundles+=("$sig" "$att")
   summary+="| \`$f\` | \`$digest\` | \`$sig\` | \`$att\` |\n"

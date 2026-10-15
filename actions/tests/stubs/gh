@@ -40,7 +40,8 @@ case "$args" in
       n=$(basename "$f"); cp "$f" "$S/assets/$n"
       grep -qxF "$n" "$S/asset_ids" 2>/dev/null || echo "$n" >> "$S/asset_ids"
     done ;;
-  *" release view "*) releases | jq -r --arg t "$3" '.[] | select(.tag_name == $t) | .draft' ;;
+  *" release view "*)
+    releases | jq --arg t "$3" '.[] | select(.tag_name == $t) | {isDraft: .draft, tagName: .tag_name, targetCommitish: .target_commitish}' ;;
   *" release download "*) dir="${args##* --dir }"; dir="${dir%% *}"; cp "$S"/assets/* "$dir"/ ;;
   *) echo "gh stub: unhandled: $*" >&2; exit 2 ;;
 esac
