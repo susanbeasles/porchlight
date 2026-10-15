@@ -5,35 +5,35 @@ accepted:
   - rule: SUSP_Shell_Curl_Pipe_Sh
     path: README.md
     sha256: d5af7989edffa8594b621dc30b1af2e2e7391a454bd2a585fe23b69d8f41af3e
-    reason: "Describes curl | sh as a living-off-the-land technique Porchlight detects; documentation, not an instruction."
+    reason: "Describes curl piped to a shell as a living-off-the-land technique Porchlight detects; documentation, not an instruction."
     expires: 2027-04-13
   - rule: AI-FETCH-AND-EXECUTE
     path: README.md
     sha256: d5af7989edffa8594b621dc30b1af2e2e7391a454bd2a585fe23b69d8f41af3e
-    reason: "Describes curl | sh as a living-off-the-land technique Porchlight detects; documentation, not an instruction."
+    reason: "Describes curl piped to a shell as a living-off-the-land technique Porchlight detects; documentation, not an instruction."
     expires: 2027-04-13
   - rule: SUSP_Shell_Curl_Pipe_Sh
     path: SPEC.md
     sha256: 887b47ef97f10b8c9c413f211f09436839a95dbf8b1046e2ef6335fcca7a532f
-    reason: "Names the curl | sh golden-replay fixture the detection rules are tested against."
+    reason: "Names the curl piped to a shell golden-replay fixture the detection rules are tested against."
     expires: 2027-04-13
   - rule: AI-FETCH-AND-EXECUTE
     path: SPEC.md
     sha256: 887b47ef97f10b8c9c413f211f09436839a95dbf8b1046e2ef6335fcca7a532f
-    reason: "Names the curl | sh golden-replay fixture the detection rules are tested against."
+    reason: "Names the curl piped to a shell golden-replay fixture the detection rules are tested against."
     expires: 2027-04-13
   - rule: SUSP_Shell_Curl_Pipe_Sh
     path: AGENTS.md
     sha256: 8efd58d7be88ee3345a2e54994d450fd9fbc13e915824230e642cb289bf4eba1
-    reason: "Agent rule that forbids curl | sh."
+    reason: "Agent rule that forbids curl piped to a shell."
     expires: 2027-04-13
   - rule: AI-FETCH-AND-EXECUTE
     path: AGENTS.md
     sha256: 8efd58d7be88ee3345a2e54994d450fd9fbc13e915824230e642cb289bf4eba1
-    reason: "Agent rule that forbids curl | sh."
+    reason: "Agent rule that forbids curl piped to a shell."
     expires: 2027-04-13
   - rule: SUSP_Shell_Curl_Pipe_Sh
     path: .guard/tests/guard.ts
     sha256: 80fff23d10216ac94615baeaed08c1c90217831bc8e8d476ec5dcb10e6ae4aa3
-    reason: "Agent-guard test corpus: asserts the guard blocks curl | sh."
+    reason: "Agent-guard test corpus: asserts the guard blocks curl piped to a shell."
     expires: 2027-04-13
