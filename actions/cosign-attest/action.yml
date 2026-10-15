@@ -1,0 +1,81 @@
+name: cosign attest
+description: >
+  Keyless Sigstore signing and SLSA v1 provenance for files, out of band: cosign signs with
+  the job's GitHub OIDC identity, writes .sigstore.json bundles next to each file, verifies
+  them before returning, and optionally uploads them to a GitHub release. Does not use the
+  GitHub attestations API.
+
+# Caller requirements (see README.md):
+#   permissions: { id-token: write }        (+ contents: write when release-tag is set)
+#   Signing records the file digest, repository and workflow in the public Rekor log.
+
+inputs:
+  subjects:
+    description: Newline-separated files or globs to sign. Every line must match at least one file.
+    required: true
+  cosign-release:
+    description: cosign version installed by sigstore/cosign-installer.
+    default: v3.1.3
+  predicate-type:
+    description: cosign attest-blob --type.
+    default: slsaprovenance1
+  certificate-identity:
+    description: >
+      Identity the bundles must verify against. Defaults to this workflow file at this ref
+      (https://github.com/$GITHUB_WORKFLOW_REF). Set it when signing from a reusable workflow.
+    default: ""
+  release-tag:
+    description: Upload the bundles to this existing GitHub release. Empty skips the upload.
+    default: ""
+  allow-private-repo:
+    description: >
+      Sign from a private repository. The repository and workflow names become public in
+      Rekor, so this is refused unless set to "true".
+    default: "false"
+  github-token:
+    description: Token for the release upload (needs contents write).
+    default: ${{ github.token }}
+
+outputs:
+  bundles:
+    description: Newline-separated paths of every bundle written (signature and attestation).
+    value: ${{ steps.sign.outputs.bundles }}
+  certificate-identity:
+    description: The identity the bundles were verified against.
+    value: ${{ steps.sign.outputs.identity }}
+
+runs:
+  using: composite
+  steps:
+    - name: Preflight
+      shell: bash
+      env:
+        PRIVATE_REPO: ${{ github.event.repository.private }}
+        ALLOW_PRIVATE: ${{ inputs.allow-private-repo }}
+      run: bash "$GITHUB_ACTION_PATH/preflight.sh"
+
+    - name: Install cosign
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      with:
+        cosign-release: ${{ inputs.cosign-release }}
+
+    - name: Sign, attest and verify
+      id: sign
+      shell: bash
+      env:
+        SUBJECTS: ${{ inputs.subjects }}
+        PREDICATE_TYPE: ${{ inputs.predicate-type }}
+        IDENTITY: ${{ inputs.certificate-identity }}
+      run: bash "$GITHUB_ACTION_PATH/sign.sh"
+
+    - name: Upload bundles to the release
+      if: inputs.release-tag != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        GH_REPO: ${{ github.repository }}
+        TAG: ${{ inputs.release-tag }}
+        BUNDLES: ${{ steps.sign.outputs.bundles }}
+      run: |
+        mapfile -t files < <(printf '%s\n' "$BUNDLES" | sed '/^$/d')
+        gh release upload "$TAG" "${files[@]}" --clobber

@@ -13,3 +13,4 @@ contract says what it says, or answers one of its open questions.
 | [0005](0005-m2-extension-build-and-ipc.md) | M2 extension build, IPC and naming | proposed |
 | [0006](0006-enhanced-security-and-arm64e.md) | Enhanced Security (C9) and arm64e for Rust binaries | open |
 | [0007](0007-no-sip-workarounds.md) | No SIP-disabled development path | accepted |
+| [0008](0008-supply-chain-actions.md) | Supply-chain slices: npm trusted publishing and out-of-band cosign | proposed |

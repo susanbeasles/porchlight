@@ -1,0 +1,139 @@
+name: npm trusted publish
+description: >
+  Build a tree-shaken, minified bundle, verify the package holds only that bundle, compute
+  the next version from commits, publish to npmjs.org through OIDC trusted publishing with
+  provenance, and cut a GitHub release. No long-lived npm token is accepted.
+
+# Caller requirements (see README.md):
+#   permissions: { contents: write, id-token: write }
+#   actions/checkout with fetch-depth: 0
+#   npm trusted publisher configured for this repository and the calling workflow file
+#   esbuild pinned in the package's devDependencies and package-lock.json
+
+inputs:
+  working-directory:
+    description: Package directory (contains package.json and package-lock.json).
+    default: "."
+  entry:
+    description: Bundle entry point, relative to working-directory.
+    required: true
+  out-file:
+    description: Bundle output, relative to working-directory. package.json "files" must cover it.
+    default: dist/index.js
+  format:
+    description: esbuild output format (esm, cjs).
+    default: esm
+  platform:
+    description: esbuild platform (node, neutral, browser).
+    default: node
+  target:
+    description: esbuild target.
+    default: node22
+  max-bundle-bytes:
+    description: Fail if the bundle exceeds this many bytes. 0 disables the budget.
+    default: "0"
+  node-version:
+    description: Node.js version for the build.
+    default: "22"
+  npm-version:
+    description: npm CLI version. Trusted publishing needs 11.5.1 or later.
+    default: "11.5.1"
+  release:
+    description: Create a GitHub release for the published version.
+    default: "true"
+  dry-run:
+    description: Do everything except publish and release.
+    default: "false"
+  github-token:
+    description: Token for the GitHub release (needs contents write).
+    default: ${{ github.token }}
+
+outputs:
+  version:
+    description: The version published, or empty when nothing was released.
+    value: ${{ steps.version.outputs.version }}
+  tag:
+    description: The release tag (v<version>), or empty.
+    value: ${{ steps.version.outputs.tag }}
+  tarball:
+    description: Absolute path of the exact tarball published, for signing.
+    value: ${{ steps.pack.outputs.tarball }}
+  bundle-bytes:
+    description: Size of the bundle in bytes.
+    value: ${{ steps.bundle.outputs.bytes }}
+
+runs:
+  using: composite
+  steps:
+    - name: Preflight
+      shell: bash
+      env:
+        DRY_RUN: ${{ inputs.dry-run }}
+        NODE_AUTH_TOKEN_SET: ${{ env.NODE_AUTH_TOKEN != '' }}
+      run: bash "$GITHUB_ACTION_PATH/preflight.sh"
+
+    - name: Set up Node
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      with:
+        node-version: ${{ inputs.node-version }}
+        # No registry-url: it writes an .npmrc that reads NODE_AUTH_TOKEN, and the
+        # default registry is already registry.npmjs.org. OIDC supplies the credential.
+        package-manager-cache: false
+
+    - name: Install npm with trusted publishing support
+      shell: bash
+      run: npm install --global --ignore-scripts "npm@${{ inputs.npm-version }}" && npm --version
+
+    - name: Install dependencies from the lockfile, without install scripts
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: npm ci --ignore-scripts
+
+    - name: Bundle (tree-shaken, minified)
+      id: bundle
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        ENTRY: ${{ inputs.entry }}
+        OUT_FILE: ${{ inputs.out-file }}
+        FORMAT: ${{ inputs.format }}
+        PLATFORM: ${{ inputs.platform }}
+        TARGET: ${{ inputs.target }}
+        MAX_BYTES: ${{ inputs.max-bundle-bytes }}
+      run: bash "$GITHUB_ACTION_PATH/bundle.sh"
+
+    - name: Compute version
+      id: version
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: node "$GITHUB_ACTION_PATH/version.mjs"
+
+    - name: Pack and check contents
+      id: pack
+      if: steps.version.outputs.version != ''
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        OUT_FILE: ${{ inputs.out-file }}
+      run: bash "$GITHUB_ACTION_PATH/pack.sh"
+
+    - name: Publish to npm (OIDC trusted publishing, provenance)
+      if: steps.version.outputs.version != '' && inputs.dry-run != 'true'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        TARBALL: ${{ steps.pack.outputs.tarball }}
+      # No NODE_AUTH_TOKEN: npm exchanges the job's OIDC token for a short-lived
+      # publish credential and attaches a Sigstore provenance attestation.
+      run: npm publish "$TARBALL" --provenance --access public
+
+    - name: GitHub release
+      if: steps.version.outputs.version != '' && inputs.release == 'true' && inputs.dry-run != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        GH_REPO: ${{ github.repository }}
+        TAG: ${{ steps.version.outputs.tag }}
+        TARBALL: ${{ steps.pack.outputs.tarball }}
+      # The tag is created server-side at the built commit; no git credentials persist.
+      run: gh release create "$TAG" "$TARBALL" --target "$GITHUB_SHA" --title "$TAG" --generate-notes

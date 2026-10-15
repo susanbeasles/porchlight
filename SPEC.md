@@ -103,9 +103,13 @@ porchlight/
 │   └── PorchlightNE/                   # Reserved. Info.plist only.
 ├── Rules/                              # Rule corpus (YAML), ATT&CK mapping JSON
 ├── Fixtures/                           # Human-recorded eslogger NDJSON + golden outputs
+├── actions/                            # Supply-chain slices S1, S2 (ADR-0008). CI only;
+│   ├── npm-trusted-publish/            # never part of the shipped app
+│   └── cosign-attest/
 ├── docs/
 │   ├── development.md
 │   ├── schema.md                       # Generated from schema doc comments
+│   ├── ci/release.yml                  # Example workflow for the actions; owner copies it
 │   └── adr/                            # Architecture decision records
 └── scripts/
     ├── check                           # fmt, clippy, test, no-network: the one entrypoint
@@ -710,6 +714,26 @@ what to click.
 **M9 — Docs and release candidate.** `docs/development.md`, `docs/schema.md`, ADRs for
 every non-obvious decision (ring capacity, path-mute inversion, no `OPEN`, no network),
 notarized build, `v0.1.0` tag.
+
+### Supply-chain slices
+
+Slices are small, independent of the milestone order, and shippable on their own. They
+touch only `actions/` and `docs/`, never the product. See ADR-0008.
+
+**S1 — npm trusted publish action.** `actions/npm-trusted-publish`: esbuild tree-shaken,
+minified bundle with an optional size budget; a tarball allow-list check; version computed
+from conventional commits against the registry; `npm publish --provenance` through OIDC
+trusted publishing with no stored token; a GitHub release at the built commit. Acceptance:
+`node --test` on the versioning logic in `scripts/check`, and a `dry-run: true` run of
+`docs/ci/release.yml` that produces the tarball without publishing.
+
+**S2 — cosign attest action.** `actions/cosign-attest`: keyless `cosign sign-blob` and
+`attest-blob` (SLSA v1 predicate) with the job's GitHub OIDC identity through the official
+`sigstore/cosign-installer`, bundles written as files beside each subject and optionally
+uploaded to the release, verified against the workflow identity before the step returns.
+No GitHub attestations API. Acceptance: on a release run, `cosign verify-blob` and
+`cosign verify-blob-attestation` from a separate machine succeed with the documented
+identity and issuer.
 
 ---
 
