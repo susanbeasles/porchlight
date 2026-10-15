@@ -30,7 +30,13 @@ jobs:
       # Compiled-language CodeQL needs a build; without one SAST-CODEQL for Rust is unavailable.
       # Executes this repository's own code on a GitHub-hosted runner.
       codeql_build_command: "sudo apt-get update && sudo apt-get install -y --no-install-recommends libsqlite3-dev && cargo build --workspace --locked"
-      # AI review stays off and no API key is passed: no source leaves for a model provider.
+      # AI security review (S4, advisory): the repository is public, so sending diffs to the model
+      # provider discloses nothing new. Owner approved 2026-10-15.
+      ai_review_enabled: true
+      ai_review_approval_ref: "owner-approved 2026-10-15: public repository"
+      ai_review_model: claude-sonnet-5-5
       # Swift CodeQL needs a macOS runner; the Swift app is a thin AppKit/SystemExtensions shell.
       # Semgrep (p/swift) and SwiftLint still gate it; Rust, C and Actions CodeQL still run.
       codeql_waive_languages: swift
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
