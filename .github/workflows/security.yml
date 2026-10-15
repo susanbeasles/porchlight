@@ -13,16 +13,19 @@ permissions: {}
 
 jobs:
   security:
-    uses: susanbeasles/workflow_depot/.github/workflows/security-assurance.yml@2485564295961f2c40f9b75449867cc4660cd835
+    uses: susanbeasles/workflow_depot/.github/workflows/security-assurance.yml@b605477b1441d16943343635fa4face5354c0230
     permissions:
       contents: read
       security-events: write   # CodeQL SARIF upload
       id-token: write          # evidence-sign job only (job-level in the reusable workflow)
     with:
       depot_repository: susanbeasles/workflow_depot
-      depot_ref: 2485564295961f2c40f9b75449867cc4660cd835   # must equal the SHA in `uses:`
+      depot_ref: b605477b1441d16943343635fa4face5354c0230   # must equal the SHA in `uses:`
       policy_profile: ci-baseline
       # Compiled-language CodeQL needs a build; without one SAST-CODEQL for Rust is unavailable.
       # Executes this repository's own code on a GitHub-hosted runner.
       codeql_build_command: "sudo apt-get update && sudo apt-get install -y --no-install-recommends libsqlite3-dev && cargo build --workspace --locked"
       # AI review stays off and no API key is passed: no source leaves for a model provider.
+      # Swift CodeQL needs a macOS runner; the Swift app is a thin AppKit/SystemExtensions shell.
+      # Semgrep (p/swift) and SwiftLint still gate it; Rust, C and Actions CodeQL still run.
+      codeql_waive_languages: swift
