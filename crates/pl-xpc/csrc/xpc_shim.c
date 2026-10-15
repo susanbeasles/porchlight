@@ -45,9 +45,11 @@ int pl_xpc_listen(const char *service, const char *peer_requirement, void *ctx,
       xpc_connection_set_event_handler(conn, ^(xpc_object_t obj) {
         deliver(conn, obj, ctx, on_msg, on_peer, 1);
       });
-      xpc_connection_activate(conn);
+      /* Register with Rust before activating: no message or INVALID can arrive for a
+       * connection Rust has not seen yet. */
       xpc_retain(conn); /* reference owned by Rust */
       on_peer(ctx, (void *)conn, PL_XPC_PEER_CONNECTED);
+      xpc_connection_activate(conn);
     });
     xpc_connection_activate(listener);
     return 0; /* the listener lives for the life of the process */

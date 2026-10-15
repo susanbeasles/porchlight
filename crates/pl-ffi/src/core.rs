@@ -1,14 +1,39 @@
 //! Platform-neutral app state, testable on Linux.
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
 use pl_core::live::{LiveProcesses, LiveStats};
 use pl_core::pipeline::Pipeline;
-use pl_core::schema::{Event, Kind};
+use pl_core::schema::{DropReason, Event, Kind, Source};
 use pl_core::store::EventStore;
 use pl_raw::protocol::EsStatus;
 use serde::Serialize;
+
+/// Losses by cause. `ring_full` is a subset of `sequence_gap` (docs/schema.md).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct DropTotals {
+    pub sequence_gap: u64,
+    pub ring_full: u64,
+    pub app_disconnected: u64,
+    /// Events received from the extension that the store refused to append.
+    pub store_failed: u64,
+}
+
+/// Every Endpoint Security message carries `global_seq_num`, contiguous per client. A hole
+/// in what reached the store is a loss somewhere between the kernel and SQLite: the ring,
+/// the extension's queue, or XPC delivery into a connection that was dying. This is the
+/// single number that cannot under-count.
+///
+/// When M3 filters unmodified `close` in the handler, those messages create holes too and
+/// this check must learn to expect them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct EndToEnd {
+    pub delivered: u64,
+    pub missing: u64,
+    pub gaps: u64,
+    /// The sequence went backwards: the extension restarted.
+    pub restarts: u64,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct AppStats {
@@ -18,8 +43,8 @@ pub struct AppStats {
     pub high_water: u64,
     pub live_processes: usize,
     pub live: LiveStats,
-    /// Sum of `drop` counts by reason. `ring_full` is a subset of `sequence_gap`.
-    pub drops: BTreeMap<String, u64>,
+    pub drops: DropTotals,
+    pub end_to_end: EndToEnd,
     pub batches: u64,
     pub ingest_errors: u64,
     pub last_error: Option<String>,
@@ -28,7 +53,39 @@ pub struct AppStats {
 pub struct AppCore {
     pipeline: Pipeline,
     live: LiveProcesses,
+    last_global: Option<u64>,
     stats: AppStats,
+}
+
+fn observe(
+    stats: &mut AppStats,
+    live: &mut LiveProcesses,
+    last_global: &mut Option<u64>,
+    ev: &Event,
+) {
+    live.apply(ev);
+    match &ev.kind {
+        Kind::Drop { count, reason, .. } => match reason {
+            DropReason::SequenceGap => stats.drops.sequence_gap += count,
+            DropReason::RingFull => stats.drops.ring_full += count,
+            DropReason::AppDisconnected => stats.drops.app_disconnected += count,
+        },
+        _ if ev.source == Source::EndpointSecurity => {
+            let e2e = &mut stats.end_to_end;
+            e2e.delivered += 1;
+            let g = ev.global_seq_num;
+            match *last_global {
+                Some(last) if g > last.saturating_add(1) => {
+                    e2e.gaps += 1;
+                    e2e.missing += g - last - 1;
+                }
+                Some(last) if g <= last => e2e.restarts += 1,
+                _ => {}
+            }
+            *last_global = Some(g);
+        }
+        _ => {}
+    }
 }
 
 impl AppCore {
@@ -43,6 +100,7 @@ impl AppCore {
         Ok(Self {
             pipeline,
             live: LiveProcesses::new(),
+            last_global: None,
             stats: AppStats {
                 high_water,
                 ..Default::default()
@@ -64,7 +122,7 @@ impl AppCore {
 
     /// Parses and ingests one `batch` payload.
     pub fn ingest_json(&mut self, json: &[u8]) -> Result<u64, String> {
-        let mut batch: Vec<Event> = match serde_json::from_slice(json) {
+        let batch: Vec<Event> = match serde_json::from_slice(json) {
             Ok(b) => b,
             Err(e) => {
                 self.stats.ingest_errors += 1;
@@ -73,24 +131,13 @@ impl AppCore {
                 return Err(msg);
             }
         };
-        // Pre-assign the ids the pipeline will give, so live tracking can cite them.
-        let first = self.pipeline.next_id();
-        for (i, ev) in batch.iter_mut().enumerate() {
-            ev.id = first + i as u64;
-        }
-        let applied = batch.clone();
-        match self.pipeline.ingest(batch) {
+        let n = batch.len() as u64;
+        let (stats, live, last_global) = (&mut self.stats, &mut self.live, &mut self.last_global);
+        match self
+            .pipeline
+            .ingest_inspect(batch, |ev| observe(stats, live, last_global, ev))
+        {
             Ok(report) => {
-                for ev in &applied {
-                    self.live.apply(ev);
-                    if let Kind::Drop { count, reason, .. } = &ev.kind {
-                        let key = serde_json::to_value(reason)
-                            .ok()
-                            .and_then(|v| v.as_str().map(str::to_owned))
-                            .unwrap_or_else(|| "unknown".to_owned());
-                        *self.stats.drops.entry(key).or_insert(0) += count;
-                    }
-                }
                 self.stats.events_ingested += report.ingested;
                 self.stats.high_water = report.last_id.max(self.stats.high_water);
                 self.stats.batches += 1;
@@ -98,7 +145,8 @@ impl AppCore {
             }
             Err(e) => {
                 self.stats.ingest_errors += 1;
-                let msg = format!("store append failed: {e}");
+                self.stats.drops.store_failed += n;
+                let msg = format!("store append failed, {n} events lost: {e}");
                 self.stats.last_error = Some(msg.clone());
                 Err(msg)
             }

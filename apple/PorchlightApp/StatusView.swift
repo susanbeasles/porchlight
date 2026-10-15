@@ -69,11 +69,13 @@ struct StatusView: View {
         }
     }
 
+    /// The end-to-end count is the headline: it catches loss anywhere between the kernel and
+    /// the store. The causes are detail.
     private func droppedText(_ stats: AppStats?) -> String {
-        guard let stats else { return "0" }
-        let gaps = stats.drops["sequence_gap"] ?? 0
-        let offline = stats.drops["app_disconnected"] ?? 0
-        return gaps + offline == 0 ? "None" : "\(gaps) skipped, \(offline) while the app was closed"
+        guard let stats else { return "Unknown" }
+        let missing = stats.endToEnd.missing + stats.drops.storeFailed
+        if missing == 0 { return "None" }
+        return "\(missing) (queue full: \(stats.drops.ringFull), app closed: \(stats.drops.appDisconnected), not saved: \(stats.drops.storeFailed))"
     }
 
     private func pidversionText(_ live: LiveStats?) -> String {

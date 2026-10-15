@@ -42,7 +42,17 @@ impl Pipeline {
     }
 
     /// Assigns monotonic ids, stamps the schema version and appends in one transaction.
-    pub fn ingest(&mut self, mut batch: Vec<Event>) -> Result<IngestReport> {
+    pub fn ingest(&mut self, batch: Vec<Event>) -> Result<IngestReport> {
+        self.ingest_inspect(batch, |_| {})
+    }
+
+    /// As [`ingest`](Self::ingest), then calls `inspect` on each stored event, with its id,
+    /// in order. `inspect` runs only if the append succeeded.
+    pub fn ingest_inspect<F: FnMut(&Event)>(
+        &mut self,
+        mut batch: Vec<Event>,
+        mut inspect: F,
+    ) -> Result<IngestReport> {
         if batch.is_empty() {
             return Ok(IngestReport::default());
         }
@@ -57,6 +67,7 @@ impl Pipeline {
         }
         self.store.append(&batch)?;
         self.next_id = id;
+        batch.iter().for_each(&mut inspect);
         Ok(IngestReport {
             ingested: batch.len() as u64,
             first_id,
@@ -118,6 +129,22 @@ mod tests {
             vec![1, 2, 3, 4]
         );
         assert!(stored.iter().all(|e| e.schema_version == SCHEMA_VERSION));
+    }
+
+    #[test]
+    fn inspect_sees_stored_events_with_ids_only_on_success() {
+        let mut p = Pipeline::new(EventStore::open_in_memory().unwrap()).unwrap();
+        let mut seen = Vec::new();
+        p.ingest_inspect(vec![unassigned(Kind::Exit { status: 0 }); 2], |e| {
+            seen.push(e.id)
+        })
+        .unwrap();
+        assert_eq!(seen, vec![1, 2]);
+        let mut bad = unassigned(Kind::Exit { status: 1 });
+        bad.mach_time = MachTime(u64::MAX);
+        let mut called = false;
+        assert!(p.ingest_inspect(vec![bad], |_| called = true).is_err());
+        assert!(!called);
     }
 
     #[test]

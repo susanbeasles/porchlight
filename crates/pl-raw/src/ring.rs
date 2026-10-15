@@ -15,6 +15,7 @@ unsafe extern "C" {
     fn pl_ring_pop(ring: *mut c_void, out: *mut PlRawEvent, max: u32) -> u32;
     fn pl_ring_drop_counts(ring: *const c_void, out: *mut u64);
     fn pl_ring_producer_overlaps(ring: *const c_void) -> u64;
+    fn pl_ring_consumer_overlaps(ring: *const c_void) -> u64;
 }
 
 /// Owner of a C ring. The SPSC contract: exactly one thread produces (the ES handler, or
@@ -27,7 +28,8 @@ pub struct Ring {
 // SAFETY: the ring's shared state is C11 atomics; the slot memory is handed between one
 // producer and one consumer through acquire/release on head and tail.
 unsafe impl Send for Ring {}
-// SAFETY: as above; concurrent `push` and `pop` from two threads is the designed use.
+// SAFETY: as above. Concurrent `push` and `pop` is the designed use; a second concurrent
+// producer or consumer is detected by an atomic flag in C and refused, never raced.
 unsafe impl Sync for Ring {}
 
 impl Ring {
@@ -53,7 +55,8 @@ impl Ring {
         unsafe { pl_ring_push(self.ptr.as_ptr(), ev) }
     }
 
-    /// Replaces `out`'s contents with up to `max` events. Returns how many.
+    /// Replaces `out`'s contents with up to `max` events. Returns how many. Returns 0 if
+    /// another thread is popping at the same moment (counted in `consumer_overlaps`).
     pub fn pop(&self, out: &mut Vec<PlRawEvent>, max: usize) -> usize {
         out.clear();
         out.reserve(max);
@@ -71,6 +74,11 @@ impl Ring {
         // SAFETY: `out` holds exactly PL_EV_SLOTS entries, as the C side requires.
         unsafe { pl_ring_drop_counts(self.ptr.as_ptr(), out.as_mut_ptr()) };
         out
+    }
+
+    pub fn consumer_overlaps(&self) -> u64 {
+        // SAFETY: `ptr` is live.
+        unsafe { pl_ring_consumer_overlaps(self.ptr.as_ptr()) }
     }
 
     pub fn producer_overlaps(&self) -> u64 {
@@ -184,5 +192,61 @@ mod tests {
             "every event is either delivered or counted"
         );
         assert!(seen.windows(2).all(|w| w[0] < w[1]), "order preserved");
+    }
+
+    #[test]
+    fn concurrent_consumers_never_duplicate() {
+        const N: u64 = 50_000;
+        let ring = Arc::new(Ring::new(1024).unwrap());
+        let producer = {
+            let ring = Arc::clone(&ring);
+            std::thread::spawn(move || {
+                let mut e = PlRawEvent::zeroed_box();
+                e.event_type = PL_EV_EXIT;
+                let mut seq = 0;
+                while seq < N {
+                    e.seq_num = seq;
+                    if ring.push(&e) {
+                        seq += 1;
+                    } else {
+                        std::thread::yield_now();
+                    }
+                }
+            })
+        };
+        let total = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let consumers: Vec<_> = (0..2)
+            .map(|_| {
+                let ring = Arc::clone(&ring);
+                let total = Arc::clone(&total);
+                std::thread::spawn(move || {
+                    use std::sync::atomic::Ordering::Relaxed;
+                    let mut out = Vec::new();
+                    let mut got = Vec::new();
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+                    while total.load(Relaxed) < N && std::time::Instant::now() < deadline {
+                        let n = ring.pop(&mut out, 16);
+                        got.extend(out.iter().map(|e| e.seq_num));
+                        total.fetch_add(n as u64, Relaxed);
+                    }
+                    got
+                })
+            })
+            .collect();
+        producer.join().unwrap();
+        // Drain whatever the consumers left once they stop.
+        let mut all: Vec<u64> = consumers
+            .into_iter()
+            .flat_map(|c| c.join().unwrap())
+            .collect();
+        let mut out = Vec::new();
+        while ring.pop(&mut out, 64) > 0 {
+            all.extend(out.iter().map(|e| e.seq_num));
+        }
+        all.sort_unstable();
+        let before = all.len();
+        all.dedup();
+        assert_eq!(all.len(), before, "no event delivered twice");
+        assert_eq!(all.len() as u64, N, "every event delivered once");
     }
 }

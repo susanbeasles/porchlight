@@ -5,7 +5,8 @@
  * ring is full, in which case a per-type drop counter is incremented. The handler never
  * blocks and never allocates. commit() publishes the slot.
  *
- * Consumer: the bridge thread. pop() copies up to `max` events out.
+ * Consumer: the bridge thread. pop() copies up to `max` events out. A concurrent second
+ * consumer is refused (returns 0) and counted, so misuse cannot race on the head index.
  *
  * SPEC §12 asks whether the ES handler can run concurrently for one client. If it ever
  * does, reserve() detects the overlap, refuses the second producer, and counts it in
@@ -36,5 +37,6 @@ uint32_t pl_ring_pop(pl_ring_t *ring, pl_raw_event_t *out, uint32_t max);
 /* Monotonic per-type drop counters; out must hold PL_EV_SLOTS entries. */
 void pl_ring_drop_counts(const pl_ring_t *ring, uint64_t *out);
 uint64_t pl_ring_producer_overlaps(const pl_ring_t *ring);
+uint64_t pl_ring_consumer_overlaps(const pl_ring_t *ring);
 
 #endif

@@ -34,6 +34,22 @@ struct LiveStats: Decodable {
     let exitsUntracked: UInt64
 }
 
+/// Struct, not dictionary: JSONDecoder's snake-case strategy also rewrites dictionary keys.
+struct DropTotals: Decodable {
+    let sequenceGap: UInt64
+    let ringFull: UInt64
+    let appDisconnected: UInt64
+    let storeFailed: UInt64
+}
+
+/// Holes in Endpoint Security's global sequence among events that reached the store.
+struct EndToEnd: Decodable {
+    let delivered: UInt64
+    let missing: UInt64
+    let gaps: UInt64
+    let restarts: UInt64
+}
+
 struct AppStats: Decodable {
     let connected: Bool
     let extensionStatus: ExtensionStatus?
@@ -41,7 +57,8 @@ struct AppStats: Decodable {
     let highWater: UInt64
     let liveProcesses: Int
     let live: LiveStats
-    let drops: [String: UInt64]
+    let drops: DropTotals
+    let endToEnd: EndToEnd
     let batches: UInt64
     let ingestErrors: UInt64
     let lastError: String?
@@ -49,7 +66,8 @@ struct AppStats: Decodable {
     enum CodingKeys: String, CodingKey {
         case connected
         case extensionStatus = "extension"
-        case eventsIngested, highWater, liveProcesses, live, drops, batches, ingestErrors, lastError
+        case eventsIngested, highWater, liveProcesses, live, drops, endToEnd, batches, ingestErrors
+        case lastError
     }
 }
 

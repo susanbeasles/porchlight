@@ -140,10 +140,19 @@ impl Bridge {
     pub fn accept(&mut self, raws: &[PlRawEvent], ring_drops: &[u64; PL_EV_SLOTS], now: Instant) {
         for raw in raws {
             self.stats.raw_events += 1;
+            // Every timestamp on a drop event comes from a real message, never a default.
+            self.last_at = (
+                MachTime(raw.mach_time),
+                WallTime(
+                    raw.wall_sec
+                        .saturating_mul(1_000_000_000)
+                        .saturating_add(raw.wall_nsec),
+                ),
+            );
             if let Some((expected, got)) = self.seq.observe(raw.event_type, raw.seq_num) {
                 self.stats.sequence_gaps += 1;
                 self.stats.sequence_gap_messages += got - expected;
-                let at = (MachTime(raw.mach_time), self.last_at.1);
+                let at = self.last_at;
                 let ev = drop_event(
                     &self.identity,
                     event_type_name(raw.event_type),
@@ -160,16 +169,18 @@ impl Bridge {
             }
             match decode(raw) {
                 Ok(ev) => {
-                    self.last_at = (ev.mach_time, ev.wall_time);
                     self.stats.events += 1;
                     self.push(ev, now);
                 }
                 Err(_) => self.stats.decode_errors += 1,
             }
         }
+        // Until a first message has been seen there is no honest timestamp; the counters are
+        // monotonic, so deferring loses nothing.
+        let have_time = self.last_at.1 != WallTime(0);
         for (ty, &now_count) in ring_drops.iter().enumerate() {
             let last = self.last_ring_drops[ty];
-            if now_count > last {
+            if have_time && now_count > last {
                 let delta = now_count - last;
                 self.last_ring_drops[ty] = now_count;
                 self.stats.ring_drops += delta;
@@ -275,19 +286,6 @@ impl Outbox {
             self.queue.push_back(ev);
         }
         None
-    }
-
-    /// A send failed: the peer is gone. Requeue the batch at the front, oldest first.
-    pub fn send_failed(&mut self, batch: Vec<Event>) {
-        self.connected = false;
-        for ev in batch.into_iter().rev() {
-            self.queue.push_front(ev);
-        }
-        while self.queue.len() > OVERFLOW_CAP {
-            self.queue.pop_front();
-            self.dropped += 1;
-            self.dropped_total += 1;
-        }
     }
 
     pub fn set_connected(&mut self, connected: bool) {
@@ -442,6 +440,39 @@ mod tests {
     }
 
     #[test]
+    fn ring_drops_wait_for_a_real_timestamp() {
+        let t0 = Instant::now();
+        let mut b = Bridge::new(me());
+        let mut ring = [0u64; PL_EV_SLOTS];
+        ring[PL_EV_EXIT as usize] = 3;
+        b.accept(&[], &ring, t0);
+        assert!(
+            b.take_all().is_empty(),
+            "no message yet: no timestamp to give the drop"
+        );
+        b.accept(&[*raw(PL_EV_EXIT, 0)], &ring, t0);
+        let all: Vec<Event> = b.take_all().into_iter().flatten().collect();
+        assert_eq!(kinds(&all), vec!["exit", "drop"]);
+        assert_eq!(all[1].wall_time, WallTime(1_760_000_100_000_000_005));
+        assert_eq!(all[1].mach_time, MachTime(1000));
+    }
+
+    #[test]
+    fn gap_drop_takes_its_times_from_the_message_even_if_decode_fails() {
+        let t0 = Instant::now();
+        let mut b = Bridge::new(me());
+        let mut first = raw(PL_EV_EXIT, 0);
+        first.version = 99; // undecodable
+        let mut second = raw(PL_EV_EXIT, 5);
+        second.version = 99;
+        b.accept(&[*first, *second], &[0; PL_EV_SLOTS], t0);
+        let all: Vec<Event> = b.take_all().into_iter().flatten().collect();
+        assert_eq!(kinds(&all), vec!["drop"]);
+        assert_eq!(all[0].mach_time, MachTime(1005));
+        assert_ne!(all[0].wall_time, WallTime(0));
+    }
+
+    #[test]
     fn batches_by_size_then_by_age() {
         let t0 = Instant::now();
         let mut b = Bridge::new(me());
@@ -517,20 +548,5 @@ mod tests {
             Some(1),
             "back to pass-through"
         );
-    }
-
-    #[test]
-    fn failed_send_requeues_in_order() {
-        let mut o = Outbox::new(me());
-        o.set_connected(true);
-        let first = o.offer(batch_of(3)).unwrap();
-        let seqs: Vec<u64> = first.iter().map(|e| e.seq_num).collect();
-        o.send_failed(first);
-        assert!(!o.is_connected());
-        assert!(o.offer(batch_of(1)).is_none());
-        o.set_connected(true);
-        let again: Vec<u64> = o.drain().into_iter().flatten().map(|e| e.seq_num).collect();
-        assert_eq!(&again[..3], &seqs[..]);
-        assert_eq!(again.len(), 4);
     }
 }

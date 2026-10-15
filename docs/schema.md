@@ -104,6 +104,12 @@ streaming; those never had a chance to reach the store.
 
 `drop` events are attributed to the extension's own process identity.
 
+The app adds one more check that does not depend on any of these counters: Endpoint
+Security's `global_seq_num` is contiguous per client, so a hole among the events that
+reached the store is a loss somewhere between the kernel and SQLite, including XPC
+delivery into a connection that was dying. The Status screen leads with that number
+(`end_to_end.missing`, plus `drops.store_failed` for batches the store refused).
+
 ## Store columns
 
 `events(id, mach_time, wall_time, seq_num, global_seq_num, source, kind, process_token,

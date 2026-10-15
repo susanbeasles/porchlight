@@ -285,10 +285,27 @@ fn processes(args: &[String]) -> CliResult {
     let db = opts.value("db").ok_or("processes: --db is required")?;
     let slack = opts.u64_value("slack-secs")?.unwrap_or(3);
     let store = EventStore::open_read_only(Path::new(db))?;
+    // Only the latest collection session counts: Endpoint Security's global sequence restarts
+    // with each client, so a backwards step marks a new session and resets the live set.
     let mut live = LiveProcesses::new();
     let mut first_wall: Option<i64> = None;
+    let mut last_global: Option<u64> = None;
+    let mut sessions = 1u64;
     store.for_each_event(1, None, |event| {
-        first_wall.get_or_insert(event.wall_time.0);
+        let is_es_message = event.source == pl_core::schema::Source::EndpointSecurity
+            && !matches!(event.kind, pl_core::schema::Kind::Drop { .. });
+        let is_replayed = event.source == pl_core::schema::Source::Replay;
+        if is_es_message || is_replayed {
+            if last_global.is_some_and(|last| event.global_seq_num < last) {
+                live = LiveProcesses::new();
+                first_wall = None;
+                sessions += 1;
+            }
+            last_global = Some(event.global_seq_num);
+        }
+        if event.wall_time.0 > 0 {
+            first_wall.get_or_insert(event.wall_time.0);
+        }
         live.apply(&event);
         Ok(())
     })?;
@@ -319,6 +336,7 @@ fn processes(args: &[String]) -> CliResult {
     }
     let cmp = compare_with_ps(&live.pids(), &rows, window, slack);
     let report = serde_json::json!({
+                "sessions_in_store": sessions,
         "window_secs": window,
         "slack_secs": slack,
         "live": live.stats(),

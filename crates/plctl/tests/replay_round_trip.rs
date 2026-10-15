@@ -249,6 +249,15 @@ fn es_line(seq: u64, actor: &str, event: &str) -> String {
 
 fn processes_db(dir: &Path) -> PathBuf {
     let lines = [
+        // An earlier session: its process must not count as live in the latest one.
+        es_line(
+            900,
+            &process_json(100, 1, "/bin/zsh"),
+            &format!(
+                r#"{{"fork":{{"child":{}}}}}"#,
+                process_json(777, 1, "/bin/zsh")
+            ),
+        ),
         es_line(
             1,
             &process_json(100, 1, "/bin/zsh"),
@@ -325,6 +334,7 @@ fn processes_agrees_with_matching_ps() {
     assert_eq!(v["comparison"]["tracked_live"], 1);
     assert_eq!(v["live"]["exec_pidversion_changed"], 1);
     assert_eq!(v["live"]["exits"], 1);
+    assert_eq!(v["sessions_in_store"], 2);
 }
 
 #[test]

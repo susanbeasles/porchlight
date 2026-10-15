@@ -110,6 +110,9 @@ and `"agrees": true` is a pass. A process in `missing_from_ps` means an `exit` w
 one in `untracked_in_window` means a `fork` or `exec` was. Processes older than the
 collection window are out of scope until M4 seeds the graph at startup.
 
+Only the latest collection session is compared: a backwards step in the global sequence
+marks an extension restart, and `sessions_in_store` says how many the store holds.
+
 The report also answers SPEC §12's pidversion question: `live.exec_pidversion_changed`
 against `live.exec_pidversion_same`.
 

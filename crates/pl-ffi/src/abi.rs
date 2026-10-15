@@ -172,13 +172,17 @@ mod tests {
     }
 
     fn ev(actor: ProcessIdentity, kind: Kind) -> Event {
+        ev_g(actor, kind, 0)
+    }
+
+    fn ev_g(actor: ProcessIdentity, kind: Kind, global: u64) -> Event {
         Event {
             schema_version: SCHEMA_VERSION,
             id: 0,
             mach_time: MachTime(1),
             wall_time: WallTime(1),
             seq_num: 0,
-            global_seq_num: 0,
+            global_seq_num: global,
             source: Source::EndpointSecurity,
             process: actor,
             kind,
@@ -243,6 +247,7 @@ mod tests {
         assert_eq!(s["live_processes"], 1);
         assert_eq!(s["live"]["exec_pidversion_changed"], 1);
         assert_eq!(s["drops"]["sequence_gap"], 2);
+        assert_eq!(s["drops"]["store_failed"], 0);
         assert_eq!(s["connected"], false);
 
         let junk = b"not json";
@@ -258,6 +263,26 @@ mod tests {
                 .contains("not a JSON event array")
         );
         // SAFETY: closing a live handle once.
+        unsafe { pl_app_close(app) };
+    }
+
+    #[test]
+    fn end_to_end_counts_holes_and_restarts_in_global_sequence() {
+        // SAFETY: NULL path means in-memory.
+        let app = unsafe { pl_app_open(std::ptr::null()) };
+        let exit = |g| ev_g(proc_(5, 1, "/x"), Kind::Exit { status: 0 }, g);
+        for batch in [vec![exit(1), exit(2)], vec![exit(5)], vec![exit(1)]] {
+            let json = serde_json::to_vec(&batch).unwrap();
+            // SAFETY: live handle, valid buffer.
+            let rc = unsafe { pl_app_ingest_json(app, json.as_ptr(), json.len()) };
+            assert_eq!(rc, PL_OK);
+        }
+        let s = stats(app);
+        assert_eq!(s["end_to_end"]["delivered"], 4);
+        assert_eq!(s["end_to_end"]["missing"], 2, "3 and 4 never arrived");
+        assert_eq!(s["end_to_end"]["gaps"], 1);
+        assert_eq!(s["end_to_end"]["restarts"], 1);
+        // SAFETY: closing once.
         unsafe { pl_app_close(app) };
     }
 

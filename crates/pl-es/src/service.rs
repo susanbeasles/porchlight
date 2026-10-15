@@ -10,9 +10,13 @@ use pl_xpc::{ConnId, Connection, Handler, Msg, PeerEvent};
 
 use crate::mac::log;
 
-struct State {
-    peers: BTreeMap<ConnId, Connection>,
+struct Peer {
+    conn: Connection,
     streaming: bool,
+}
+
+struct State {
+    peers: BTreeMap<ConnId, Peer>,
     outbox: Outbox,
     es_state: EsState,
     bridge: BridgeStats,
@@ -29,7 +33,6 @@ impl Service {
         Self {
             state: Mutex::new(State {
                 peers: BTreeMap::new(),
-                streaming: false,
                 outbox: Outbox::new(identity),
                 es_state: EsState::Starting,
                 bridge: BridgeStats::default(),
@@ -65,7 +68,7 @@ impl Service {
     }
 
     fn sync_connected(st: &mut State) {
-        let connected = st.streaming && !st.peers.is_empty();
+        let connected = st.peers.values().any(|p| p.streaming);
         st.outbox.set_connected(connected);
         if connected {
             for batch in st.outbox.drain() {
@@ -79,7 +82,7 @@ fn status_json(st: &State) -> Vec<u8> {
     let status = EsStatus {
         protocol_version: PROTOCOL_VERSION,
         state: st.es_state,
-        streaming: st.streaming,
+        streaming: st.peers.values().any(|p| p.streaming),
         ring_capacity: st.ring_capacity,
         producer_overlaps: st.producer_overlaps,
         queued_while_disconnected: st.outbox.queued() as u64,
@@ -99,8 +102,8 @@ fn send_status(st: &State, conn: &Connection) {
 }
 
 fn broadcast_status(st: &State) {
-    for conn in st.peers.values() {
-        send_status(st, conn);
+    for peer in st.peers.values() {
+        send_status(st, &peer.conn);
     }
 }
 
@@ -109,8 +112,9 @@ fn send_batch(st: &State, batch: &[Event]) {
         log(1, "batch serialization failed");
         return;
     };
-    for conn in st.peers.values() {
-        conn.send(
+    // Only peers that asked to stream receive events.
+    for peer in st.peers.values().filter(|p| p.streaming) {
+        peer.conn.send(
             PROTOCOL_VERSION,
             Op::Batch.as_str(),
             Some((key::EVENTS, &json)),
@@ -131,18 +135,22 @@ impl Handler for Service {
         let mut st = self.lock();
         match Op::parse(op) {
             Some(Op::Status) => {
-                if let Some(c) = st.peers.get(&conn) {
-                    send_status(&st, c);
+                if let Some(p) = st.peers.get(&conn) {
+                    send_status(&st, &p.conn);
                 }
             }
             Some(Op::StartStreaming) => {
                 let _watch_list_version = msg.int(key::WATCH_LIST_VERSION);
-                st.streaming = true;
+                if let Some(p) = st.peers.get_mut(&conn) {
+                    p.streaming = true;
+                }
                 Service::sync_connected(&mut st);
                 broadcast_status(&st);
             }
             Some(Op::StopStreaming) => {
-                st.streaming = false;
+                if let Some(p) = st.peers.get_mut(&conn) {
+                    p.streaming = false;
+                }
                 Service::sync_connected(&mut st);
                 broadcast_status(&st);
             }
@@ -162,14 +170,17 @@ impl Handler for Service {
         let mut st = self.lock();
         match event {
             PeerEvent::Connected(conn) => {
-                st.peers.insert(conn.id(), conn);
+                st.peers.insert(
+                    conn.id(),
+                    Peer {
+                        conn,
+                        streaming: false,
+                    },
+                );
             }
             PeerEvent::Interrupted(_) => {}
             PeerEvent::Invalid(id) => {
                 st.peers.remove(&id);
-                if st.peers.is_empty() {
-                    st.streaming = false;
-                }
             }
         }
         Service::sync_connected(&mut st);
