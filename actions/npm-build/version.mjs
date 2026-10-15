@@ -11,7 +11,7 @@ import { pathToFileURL } from "node:url";
 const SEMVER = /^(\d+)\.(\d+)\.(\d+)$/;
 
 export function parse(v) {
-  const m = SEMVER.exec(v ?? "");
+  const m = String(v ?? "").match(SEMVER);
   if (!m) throw new Error(`not a plain x.y.z version: ${JSON.stringify(v)}`);
   return m.slice(1).map(Number);
 }
