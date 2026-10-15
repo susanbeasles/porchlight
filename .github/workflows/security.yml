@@ -1,0 +1,28 @@
+# Security: the workflow_depot security-assurance suite on every push, every PR and daily.
+# All policy lives in the depot (14 hash-pinned scanners plus Semgrep, CodeQL, SCA, SBOM, IaC,
+# forensics and a signed evidence bundle); this caller only pins it. Bump both SHAs together.
+name: Security
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "17 3 * * *"   # daily rescan: advisories change even when code does not
+
+permissions: {}
+
+jobs:
+  security:
+    uses: susanbeasles/workflow_depot/.github/workflows/security-assurance.yml@f80cee4f3b763538944942beda92b0b6a542eacd
+    permissions:
+      contents: read
+      security-events: write   # CodeQL SARIF upload
+      id-token: write          # evidence-sign job only (job-level in the reusable workflow)
+    with:
+      depot_repository: susanbeasles/workflow_depot
+      depot_ref: f80cee4f3b763538944942beda92b0b6a542eacd   # must equal the SHA in `uses:`
+      policy_profile: ci-baseline
+      # Compiled-language CodeQL needs a build; without one SAST-CODEQL for Rust is unavailable.
+      # Executes this repository's own code on a GitHub-hosted runner.
+      codeql_build_command: "sudo apt-get update && sudo apt-get install -y --no-install-recommends libsqlite3-dev && cargo build --workspace --locked"
+      # AI review stays off and no API key is passed: no source leaves for a model provider.
