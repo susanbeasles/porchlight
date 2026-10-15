@@ -2,7 +2,7 @@
 
 The deploy half of the release chain. It publishes a sealed GitHub release to npmjs.org
 and builds nothing. See [ADR-0008](../../docs/adr/0008-supply-chain-actions.md) and
-[`docs/ci/deploy.yml`](../../docs/ci/deploy.yml).
+[`.github/workflows/deploy.yml`](../../.github/workflows/deploy.yml).
 
 1. Refuses to run unless the event is `workflow_dispatch`, the ref is
    `refs/tags/<input tag>`, OIDC is available, and no `NODE_AUTH_TOKEN` is set.

@@ -115,7 +115,6 @@ porchlight/
 ├── docs/
 │   ├── development.md
 │   ├── schema.md                       # Generated from schema doc comments
-│   ├── ci/                             # release.yml, deploy.yml + install-workflows.patch
 │   └── adr/                            # Architecture decision records
 └── scripts/
     ├── check                           # fmt, clippy, test, no-network: the one entrypoint
@@ -743,7 +742,7 @@ When enabled, its jobs run in order, each with only the authority it needs:
 
 Acceptance:
 
-- offline, `actions/tests/run.sh` and `patch-sync.sh` in `scripts/check`;
+- offline, `actions/tests/run.sh` in `scripts/check`;
 - live, the controlled checks listed in ADR-0008.
 
 **S2 — npm deploy.** `deploy.yml` runs only from `workflow_dispatch` at `refs/tags/<tag>`, in

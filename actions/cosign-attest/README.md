@@ -48,7 +48,7 @@ release chain.
 
 ## Verify-only mode
 
-The release job in [`release.yml`](../../docs/ci/release.yml) holds `contents: write` but
+The release job in [`release.yml`](../../.github/workflows/release.yml) holds `contents: write` but
 no OIDC token. Before anything becomes public, it re-verifies the bundles that the signing
 job produced:
 

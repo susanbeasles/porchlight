@@ -3,7 +3,7 @@
 The build half of the release chain. It produces one sealed npm tarball and writes
 nothing outside the runner. Release and publish are separate actions. The whole flow is
 in [ADR-0008](../../docs/adr/0008-supply-chain-actions.md) and
-[`docs/ci/release.yml`](../../docs/ci/release.yml).
+[`.github/workflows/release.yml`](../../.github/workflows/release.yml).
 
 1. Runs `npm ci --ignore-scripts` from the lockfile.
 2. Builds one esbuild bundle: `--bundle --minify --tree-shaking=true --packages=external`,

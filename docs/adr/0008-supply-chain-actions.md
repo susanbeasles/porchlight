@@ -121,15 +121,11 @@ before publishing, against the signed checksums, and after, against the registry
 - `.claude/settings.json`: denies `Write(./.github/workflows/**)` and
   `Edit(./.github/workflows/**)`.
 
-The final workflow contents therefore live in `docs/ci/`. `docs/ci/install-workflows.patch`
-adds them as `.github/workflows/release.yml` and `.github/workflows/deploy.yml`.
-
-At the owner's direction, and with the owner approving the command, the patch was applied in
-`ccbb4e0`. The installed files are byte-identical to `docs/ci/`, and `patch-sync.sh` enforces
-that.
-
-`docs/ci/` stays until the installed workflows are verified on GitHub. Removing it and
-repointing references is a later change.
+The workflows were first proposed in `docs/ci/` with an install patch. At the owner's
+direction, and with the owner approving the command, they were installed byte-identical in
+`ccbb4e0` and merged in PR #7. The first `release.yml` run on `main` passed `gate` and
+skipped every later job, as the inactive state requires. `docs/ci/` and its patch were then
+removed: `.github/workflows/` is the only copy.
 
 ## Acceptance
 
@@ -148,6 +144,7 @@ Not yet proven. Each needs a controlled real check, and each fails closed until 
 
 | Gap | Controlled check that closes it |
 |---|---|
+| ~~Gate on `main` while inactive~~ | **Closed:** run 1 of `release.yml` after PR #7: `gate` passed, every later job skipped |
 | cosign v3.1.3 `sign-blob`/`attest-blob --bundle` and both verify commands. Matches cosign's published docs, never run here | In a throwaway public repository, run `cosign-attest` from a `workflow_dispatch` workflow, then run both verify commands from another machine |
 | `gh release upload <tag>` finding a draft by its pending tag | Same throwaway repository: draft, upload, view, publish with `sealed-release` |
 | GitHub keeping `target_commitish` as the SHA after publish, and the tag being lightweight | The same run; `deploy` checks both |
