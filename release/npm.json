@@ -4,5 +4,6 @@
   "name": null,
   "entry": null,
   "out_file": "dist/index.js",
-  "max_bundle_bytes": 65536
+  "max_bundle_bytes": 65536,
+  "artifact_identity": null
 }

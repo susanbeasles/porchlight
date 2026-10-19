@@ -84,6 +84,17 @@ pkg_json "@o/example" false "git+https://github.com/o/r.git" "0.25.10"
 rm "$repo/packages/ex/package-lock.json"
 refuses "gate refuses a package without a lockfile" "package-lock.json does not exist" gate
 echo '{}' > "$repo/packages/ex/package-lock.json"
+refuses "gate refuses activation without independent artifact identity" "independently reviewed artifact identity" gate
+# A real, isolated Git fixture provides the independently reviewed package tree.
+git -C "$repo" init -q
+git -C "$repo" add packages
+fixture_tree=$(git -C "$repo" write-tree)
+fixture_commit=$(printf 'fixture\n' | GIT_AUTHOR_NAME=Fixture GIT_AUTHOR_EMAIL=fixture@example.invalid GIT_COMMITTER_NAME=Fixture GIT_COMMITTER_EMAIL=fixture@example.invalid git -C "$repo" commit-tree "$fixture_tree")
+git -C "$repo" update-ref HEAD "$fixture_commit"
+source_tree=$(git -C "$repo" rev-parse HEAD:packages/ex)
+lock_digest=$(sha256sum "$repo/packages/ex/package-lock.json" | cut -d' ' -f1)
+jq --arg tree "$source_tree" --arg lock "$lock_digest" '.artifact_identity = {filename: "o-example-1.2.3.tgz", sha256: ("0" * 64), source_tree: $tree, package_lock_sha256: $lock}' "$repo/release/npm.json" > "$work/activation.json"
+cp "$work/activation.json" "$repo/release/npm.json"
 gate > /dev/null
 [[ "$(out enabled "$GITHUB_OUTPUT")" == true && "$(out name "$GITHUB_OUTPUT")" == "@o/example" \
    && "$(out directory "$GITHUB_OUTPUT")" == packages/ex ]] || die "gate: active outputs"

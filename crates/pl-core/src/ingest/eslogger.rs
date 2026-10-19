@@ -476,6 +476,7 @@ pub fn parse_value(v: &Value) -> Result<Option<Event>, String> {
     };
     Ok(Some(Event {
         schema_version: SCHEMA_VERSION,
+        capture: None,
         id: 0,
         mach_time: MachTime(u64_field(v, "mach_time").unwrap_or(0)),
         wall_time: str_field(v, "time")

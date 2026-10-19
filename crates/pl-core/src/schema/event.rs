@@ -30,6 +30,20 @@ impl Source {
     }
 }
 
+/// Native capture metadata. Absence means completeness is unknown (legacy/replay),
+/// never proof that the observation is complete. Flag bits use raw format version 1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureCompleteness {
+    pub raw_version: u32,
+    pub process_flags: u32,
+    pub target_flags: Option<u32>,
+    pub exec_flags: Option<u32>,
+    pub args_retained: Option<u32>,
+    pub env_retained: Option<u32>,
+    pub truncated: bool,
+}
+
 /// One observed event. `id` is `0` until the pipeline assigns it on ingest.
 /// Unknown fields are rejected: a newer shape must bump `SCHEMA_VERSION` (ADR-0004).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,6 +59,8 @@ pub struct Event {
     /// The acting process.
     pub process: ProcessIdentity,
     pub kind: Kind,
+    #[serde(default)]
+    pub capture: Option<CaptureCompleteness>,
 }
 
 impl Event {
@@ -80,6 +96,7 @@ mod tests {
         for kind in samples::all() {
             let event = Event {
                 schema_version: SCHEMA_VERSION,
+                capture: None,
                 id: 42,
                 mach_time: MachTime(1),
                 wall_time: WallTime(2),
@@ -91,7 +108,7 @@ mod tests {
             };
             let line = event.to_json_line().unwrap();
             assert!(
-                line.starts_with(r#"{"schema_version":1,"id":42,"mach_time":1,"wall_time":2,"#)
+                line.starts_with(r#"{"schema_version":2,"id":42,"mach_time":1,"wall_time":2,"#)
             );
             let back: Event = serde_json::from_str(&line).unwrap();
             assert_eq!(back, event);

@@ -22,8 +22,11 @@ struct StatusView: View {
 
             GroupBox("Collection") {
                 VStack(alignment: .leading, spacing: 6) {
+                    row("Incomplete events", "\(model.stats?.live.incompleteEvents ?? 0)")
+                    row("Completeness unknown", "\(model.stats?.live.completenessUnknown ?? 0)")
                     row("Events recorded", "\(model.stats?.eventsIngested ?? 0)")
                     row("Programs running (seen)", "\(model.stats?.liveProcesses ?? 0)")
+                    row("Expired by retention", model.stats?.retentionEvicted.map { String($0) } ?? "Unknown")
                     row("Missed events", droppedText(model.stats))
                     row("Exec changed pidversion", pidversionText(model.stats?.live))
                 }

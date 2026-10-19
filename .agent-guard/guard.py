@@ -3,7 +3,7 @@
 PreToolUse: deny reads of secrets/quarantine, deny unlisted fetch/MCP, scan file content before read.
 PostToolUse: scan tool output for injection markers and warn the agent.
 """
-import fnmatch, hashlib, json, os, re, shlex, sys, time, urllib.parse
+import fnmatch, hashlib, json, os, re, shlex, stat, sys, time, urllib.parse
 
 import subprocess as _sp
 def _project_root():
@@ -66,7 +66,23 @@ def norm(path):
     path = os.path.expanduser(path)
     if not os.path.isabs(path):
         path = os.path.join(CWD, path)
-    return os.path.normpath(path)
+    # Inspect components before normalizing: alias/.. must not hide a symlink.
+    current = os.path.sep
+    for part in path.split(os.path.sep):
+        if not part or part == ".":
+            continue
+        current = os.path.join(current, part)
+        try:
+            info = os.lstat(current)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            deny("Cannot establish shell/file target identity.")
+        if stat.S_ISLNK(info.st_mode):
+            deny("Symlink targets and path components require a resolved file broker.")
+        if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
+            deny("Multiply linked files require a resolved file broker.")
+    return os.path.realpath(path)
 
 def rel(path):
     try: return os.path.relpath(path, ROOT)
@@ -223,6 +239,10 @@ def pre(tool, inp):
 
     elif tool == "Bash":
         cmd = inp.get("command", "")
+        # A pathname preflight cannot safely evaluate deferred shell syntax.
+        # Fail closed instead of authorizing the literal name before expansion.
+        if any(c in cmd for c in "$`\\\n*?[]{}"):
+            deny("Deferred shell expansion is not supported; use literal structured file operations.", tool=tool)
         # Inspect direct redirections and common mutating commands. This is a
         # guardrail; arbitrary indirect execution still needs an OS sandbox.
         try:
@@ -231,6 +251,8 @@ def pre(tool, inp):
             tokens = list(lexer)
         except ValueError:
             deny("Cannot parse shell command.", tool=tool)
+        if any(os.path.basename(t) in ("ln", "link", "symlink") for t in tokens):
+            deny("Link creation requires a resolved file broker.", tool=tool)
         writes = []
         for i, token in enumerate(tokens[:-1]):
             if ">" in token and set(token) <= set("><&|"):

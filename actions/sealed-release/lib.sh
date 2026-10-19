@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shared helpers for draft.sh and publish.sh. Sourced, not executed.
 
 fail() { echo "::error title=sealed release::$1"; exit 1; }

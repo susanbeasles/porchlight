@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, rmSync, existsSync, symlinkSync, linkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -67,4 +67,31 @@ for (const script of ['guard.py', 'supervisor.py']) {
     writeFileSync(join(dir, '.agent-guard/policy.json'), 'invalid JSON');
     assert.equal(call(script, { tool_name: 'Bash', tool_input: { command: 'git status' } }).status, 2);
   }));
+}
+
+for (const script of ['guard.py', 'supervisor.py']) {
+  for (const command of [
+    'p=.codex/config.toml; printf x > "$p"',
+    'cp payload "$(printf .codex)/config.toml"',
+    'printf x > .codex/con*',
+    'ln -s .agent-guard/guard.py alias',
+    'ln .agent-guard/guard.py alias',
+  ]) test(`${script} rejects deferred shell targets: ${command}`, () => fixture(call => {
+    assert.equal(call(script, { tool_name: 'Bash', tool_input: { command } }).status, 2);
+  }));
+  for (const kind of ['file', 'directory', 'dangling', 'hard']) {
+    test(`${script} rejects ${kind} aliases for both reads and writes`, () => fixture((call, dir) => {
+      writeFileSync(join(dir, 'sensitive.key'), 'synthetic fixture only');
+      const alias = join(dir, 'alias');
+      if (kind === 'hard') linkSync(join(dir, 'sensitive.key'), alias);
+      else symlinkSync(kind === 'directory' ? '.agent-guard' : kind === 'dangling' ? '.codex/missing' : 'sensitive.key', alias);
+      const path = kind === 'directory' ? 'alias/guard.py' : 'alias';
+      for (const tool of ['Read', 'Write']) {
+        const r = call(script, { tool_name: tool, tool_input: { file_path: path } });
+        assert.equal(r.status, 2, String(r.stderr));
+      }
+      assert.equal(call(script, { tool_name: 'Bash', tool_input: { command: `cp payload ${path}` } }).status, 2);
+      assert.equal(call(script, { tool_name: 'Bash', tool_input: { command: `cat ${path}` } }).status, 2);
+    }));
+  }
 }

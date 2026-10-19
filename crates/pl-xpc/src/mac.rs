@@ -6,6 +6,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr::NonNull;
 use std::sync::Arc;
 
+use crate::Principal;
+
 type MsgFn = extern "C" fn(*mut c_void, *mut c_void, *const c_char, i64, *mut c_void);
 type PeerFn = extern "C" fn(*mut c_void, *mut c_void, c_int);
 
@@ -39,6 +41,8 @@ unsafe extern "C" {
     fn pl_xpc_msg_array_count(msg: *mut c_void, key: *const c_char) -> usize;
     fn pl_xpc_msg_array_string(msg: *mut c_void, key: *const c_char, index: usize)
     -> *const c_char;
+    fn pl_xpc_authorized_principal(conn: *mut c_void, uid: *mut u32, asid: *mut u32) -> c_int;
+    fn pl_xpc_principal_is_current(uid: u32, asid: u32) -> c_int;
     fn pl_xpc_cancel(conn: *mut c_void);
     fn pl_xpc_release(conn: *mut c_void);
 }
@@ -58,7 +62,23 @@ unsafe impl Send for Connection {}
 // SAFETY: as above; `send` takes `&self` and XPC serializes internally.
 unsafe impl Sync for Connection {}
 
+impl Principal {
+    pub fn is_current(self) -> bool {
+        // SAFETY: scalar inputs only; shim queries current kernel/console state.
+        unsafe { pl_xpc_principal_is_current(self.uid, self.asid) != 0 }
+    }
+}
+
 impl Connection {
+    pub fn authorized_principal(&self) -> Option<Principal> {
+        let mut uid = 0;
+        let mut asid = 0;
+        // SAFETY: connection is retained and both output pointers are writable scalars.
+        let allowed =
+            unsafe { pl_xpc_authorized_principal(self.ptr.as_ptr(), &mut uid, &mut asid) };
+        (allowed != 0).then_some(Principal { uid, asid })
+    }
+
     pub fn id(&self) -> ConnId {
         ConnId(self.ptr.as_ptr() as usize)
     }

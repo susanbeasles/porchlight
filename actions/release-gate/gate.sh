@@ -37,6 +37,8 @@ want_rx="${want,,}"; want_rx="${want_rx//./\\.}"
 esbuild=$(jq -r '.devDependencies.esbuild // empty' "$pkg")
 [[ "$esbuild" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "esbuild must be an exact-version devDependency, got '${esbuild:-none}'"
 
+node "$(dirname "$0")/identity.mjs" validate
+
 echo "release gate: active for $name in $dir"
 {
   echo "enabled=true"

@@ -2,7 +2,7 @@
 //! mode, forward-only migrations, a thin typed layer and no ORM.
 
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
@@ -11,18 +11,26 @@ use rusqlite::{
 use crate::schema::{DropReason, Event, Kind};
 
 /// Version of the SQL schema in this build. Bumped with every migration appended.
-pub const STORE_SCHEMA_VERSION: u32 = 1;
+pub const STORE_SCHEMA_VERSION: u32 = 2;
 
-const MIGRATIONS: &[(u32, &str)] = &[(1, include_str!("v1.sql"))];
+const MIGRATIONS: &[(u32, &str)] = &[(1, include_str!("v1.sql")), (2, include_str!("v2.sql"))];
 
 const META_SCHEMA_VERSION: &str = "schema_version";
 const META_HIGH_WATER: &str = "event_high_water";
+const MAX_DATABASE_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_BATCH_BYTES: usize = 4 * 1024 * 1024;
+const MAX_STORED_JSON_BYTES: i64 = 64 * 1024 * 1024;
+const MAX_STORED_EVENTS: i64 = 100_000;
+const RETENTION_SECONDS: i64 = 7 * 24 * 60 * 60;
+const MIN_FREE_BYTES: u64 = 512 * 1024 * 1024;
+const META_RETENTION_FLOOR: &str = "retention_floor";
 
 #[derive(Debug)]
 pub enum StoreError {
     Sqlite(rusqlite::Error),
     Json(serde_json::Error),
     Migration(String),
+    Capacity(String),
     /// An I/O error raised by a caller's callback, e.g. a closed pipe while dumping.
     Io(std::io::Error),
     /// Ids must be contiguous and strictly increasing from the persisted high-water mark.
@@ -40,6 +48,7 @@ impl fmt::Display for StoreError {
             StoreError::Sqlite(e) => write!(f, "sqlite: {e}"),
             StoreError::Json(e) => write!(f, "json: {e}"),
             StoreError::Migration(m) => write!(f, "migration: {m}"),
+            StoreError::Capacity(m) => write!(f, "telemetry capacity: {m}"),
             StoreError::Io(e) => write!(f, "io: {e}"),
             StoreError::IdOrder { expected, got } => {
                 write!(f, "event id order: expected {expected}, got {got}")
@@ -112,6 +121,7 @@ fn drop_reason_str(reason: DropReason) -> &'static str {
 
 pub struct EventStore {
     conn: Connection,
+    path: Option<PathBuf>,
 }
 
 impl EventStore {
@@ -119,7 +129,9 @@ impl EventStore {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
-        Self::init(conn)
+        let mut store = Self::init(conn)?;
+        store.path = Some(path.canonicalize()?);
+        Ok(store)
     }
 
     /// Opens an existing store read-only. Fails if its schema is not this build's version.
@@ -129,7 +141,7 @@ impl EventStore {
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-        let store = Self { conn };
+        let store = Self { conn, path: None };
         let version = store.schema_version()?;
         if version != STORE_SCHEMA_VERSION {
             return Err(StoreError::Migration(format!(
@@ -146,7 +158,23 @@ impl EventStore {
 
     fn init(conn: Connection) -> Result<Self> {
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-        let mut store = Self { conn };
+        let mut store = Self { conn, path: None };
+        let page_size: i64 = store.conn.query_row("PRAGMA page_size", [], |r| r.get(0))?;
+        let pages = MAX_DATABASE_BYTES as i64 / page_size;
+        let actual: i64 =
+            store
+                .conn
+                .query_row(&format!("PRAGMA max_page_count = {pages}"), [], |r| {
+                    r.get(0)
+                })?;
+        if actual > pages {
+            return Err(StoreError::Capacity(
+                "existing database exceeds byte budget; retain it for offline recovery".into(),
+            ));
+        }
+        store
+            .conn
+            .execute_batch("PRAGMA journal_size_limit = 0; PRAGMA wal_autocheckpoint = 256;")?;
         store.migrate()?;
         Ok(store)
     }
@@ -208,12 +236,129 @@ impl EventStore {
             .unwrap_or(0))
     }
 
+    fn available_bytes(&self) -> Result<u64> {
+        let Some(path) = &self.path else {
+            return Ok(u64::MAX);
+        };
+        // Fixed system executable, no shell or caller-selected arguments/environment.
+        let output = std::process::Command::new("/bin/df")
+            .args(["-Pk"])
+            .arg(path)
+            .env_clear()
+            .env("LC_ALL", "C")
+            .output()?;
+        if !output.status.success() {
+            return Err(StoreError::Capacity(
+                "cannot establish free disk space".into(),
+            ));
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        text.lines()
+            .last()
+            .and_then(|line| line.split_whitespace().nth(3))
+            .and_then(|value| value.parse::<u64>().ok())
+            .and_then(|blocks| blocks.checked_mul(1024))
+            .ok_or_else(|| StoreError::Capacity("invalid free-space report".into()))
+    }
+
+    fn admit_space(available: u64) -> Result<()> {
+        if available < MIN_FREE_BYTES + MAX_BATCH_BYTES as u64 * 4 {
+            return Err(StoreError::Capacity(
+                "low disk: collection batch not saved".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn checkpoint(&self) -> Result<()> {
+        let busy: i64 = self
+            .conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))?;
+        if busy != 0 {
+            return Err(StoreError::Capacity(
+                "WAL checkpoint blocked by reader; collection paused".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Cumulative prefix eviction count; IDs are never recycled or hidden as contiguous history.
+    pub fn retention_floor(&self) -> Result<u64> {
+        Ok(Self::meta_get(&self.conn, META_RETENTION_FLOOR)?
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0))
+    }
+
+    fn retain(tx: &Transaction<'_>, now: i64, max_events: i64, max_bytes: i64) -> Result<()> {
+        let mut floor: i64 = tx.query_row(
+            "SELECT coalesce(max(id), 0) FROM events WHERE stored_at < ?1",
+            [now.saturating_sub(RETENTION_SECONDS)],
+            |r| r.get(0),
+        )?;
+        let count_floor: i64 = tx.query_row(
+            "SELECT coalesce((SELECT id FROM events ORDER BY id DESC LIMIT 1 OFFSET ?1), 0)",
+            [max_events],
+            |r| r.get(0),
+        )?;
+        floor = floor.max(count_floor);
+        let mut total: i64 = tx.query_row(
+            "SELECT coalesce(sum(length(CAST(json AS BLOB))), 0) FROM events WHERE id > ?1",
+            [floor],
+            |r| r.get(0),
+        )?;
+        if total > max_bytes {
+            let mut stmt = tx.prepare(
+                "SELECT id, length(CAST(json AS BLOB)) FROM events WHERE id > ?1 ORDER BY id",
+            )?;
+            let rows =
+                stmt.query_map([floor], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
+            for row in rows {
+                let (id, bytes) = row?;
+                floor = id;
+                total -= bytes;
+                if total <= max_bytes {
+                    break;
+                }
+            }
+        }
+        if floor > 0 {
+            tx.execute("DELETE FROM drops WHERE event_id <= ?1", [floor])?;
+            tx.execute("DELETE FROM events WHERE id <= ?1", [floor])?;
+            let previous = Self::meta_get(tx, META_RETENTION_FLOOR)?
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(0);
+            Self::meta_set(tx, META_RETENTION_FLOOR, &floor.max(previous).to_string())?;
+        }
+        Ok(())
+    }
+
     /// Appends a batch in one transaction. Ids must already be assigned and continue the
     /// high-water mark contiguously; anything else is rejected and nothing is written.
     pub fn append(&mut self, events: &[Event]) -> Result<()> {
         if events.is_empty() {
             return Ok(());
         }
+        if events.len() > 1024 {
+            return Err(StoreError::Capacity("batch exceeds 1024 events".into()));
+        }
+        Self::admit_space(self.available_bytes()?)?;
+        self.checkpoint()?;
+        let mut jsons = Vec::new();
+        let mut bytes = 0usize;
+        for event in events {
+            let json = event.to_json_line()?;
+            bytes = bytes.saturating_add(json.len());
+            if bytes > MAX_BATCH_BYTES {
+                return Err(StoreError::Capacity(
+                    "batch exceeds serialized byte budget".into(),
+                ));
+            }
+            jsons.push(json);
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| StoreError::Capacity("invalid retention clock".into()))?
+            .as_secs() as i64;
         // IMMEDIATE takes the write lock before reading the high-water mark, so a second
         // writer waits on the busy handler instead of failing with BUSY_SNAPSHOT.
         let tx = self
@@ -225,14 +370,14 @@ impl EventStore {
         {
             let mut insert = tx.prepare_cached(
                 "INSERT INTO events (id, mach_time, wall_time, seq_num, global_seq_num, source, \
-                 kind, process_token, parent_token, json) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                 kind, process_token, parent_token, json, stored_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             )?;
             let mut insert_drop = tx.prepare_cached(
                 "INSERT INTO drops (event_id, event_type, expected_seq, got_seq, count, reason) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?;
-            for event in events {
+            for (event, json) in events.iter().zip(&jsons) {
                 let expected = high_water + 1;
                 if event.id != expected {
                     return Err(StoreError::IdOrder {
@@ -240,7 +385,6 @@ impl EventStore {
                         got: event.id,
                     });
                 }
-                let json = event.to_json_line()?;
                 insert.execute(params![
                     to_db(event.id)?,
                     to_db(event.mach_time.0)?,
@@ -252,6 +396,7 @@ impl EventStore {
                     event.process.token.key(),
                     event.process.parent_token.key(),
                     json,
+                    now,
                 ])?;
                 if let Kind::Drop {
                     event_type,
@@ -274,6 +419,7 @@ impl EventStore {
             }
         }
         Self::meta_set(&tx, META_HIGH_WATER, &high_water.to_string())?;
+        Self::retain(&tx, now, MAX_STORED_EVENTS, MAX_STORED_JSON_BYTES)?;
         tx.commit()?;
         Ok(())
     }
@@ -347,8 +493,9 @@ impl EventStore {
                 r.get::<_, String>(6)?,
             ))
         })?;
-        let mut expected = 1_u64;
-        let mut last_id = 0_u64;
+        let floor = self.retention_floor()?;
+        let mut expected = floor + 1;
+        let mut last_id = floor;
         for row in rows {
             let (id, kind, process_token, parent_token, mach_time, wall_time, json) = row?;
             if id != expected {
@@ -421,6 +568,7 @@ mod tests {
     fn event(id: u64, kind: Kind) -> Event {
         Event {
             schema_version: SCHEMA_VERSION,
+            capture: None,
             id,
             mach_time: MachTime(id * 10),
             wall_time: WallTime(1_700_000_000_000_000_000 + id as i64),
@@ -439,6 +587,119 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("events.db")
+    }
+
+    #[test]
+    fn retention_evicts_prefix_by_count_bytes_and_age_without_reusing_ids() {
+        let mut store = EventStore::open_in_memory().unwrap();
+        let events: Vec<_> = (1..=5)
+            .map(|id| event(id, Kind::Exit { status: 0 }))
+            .collect();
+        store.append(&events).unwrap();
+        let tx = store.conn.transaction().unwrap();
+        EventStore::retain(&tx, 0, 3, i64::MAX).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(store.retention_floor().unwrap(), 2);
+        assert_eq!(store.count().unwrap(), 3);
+        assert!(store.verify().unwrap().is_ok());
+        let one = events[4].to_json_line().unwrap().len() as i64;
+        let tx = store.conn.transaction().unwrap();
+        EventStore::retain(&tx, 0, 100, one).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(store.count().unwrap(), 1);
+        assert_eq!(store.retention_floor().unwrap(), 4);
+        store
+            .conn
+            .execute("UPDATE events SET stored_at = 1", [])
+            .unwrap();
+        let tx = store.conn.transaction().unwrap();
+        EventStore::retain(&tx, RETENTION_SECONDS + 2, 100, i64::MAX).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(store.count().unwrap(), 0);
+        assert_eq!(store.high_water().unwrap(), 5);
+        assert_eq!(store.retention_floor().unwrap(), 5);
+        assert!(store.verify().unwrap().is_ok());
+        store.append(&[event(6, Kind::Exit { status: 0 })]).unwrap();
+        assert!(store.verify().unwrap().is_ok());
+    }
+
+    #[test]
+    fn excessive_batch_count_is_rejected_without_advancing_ids() {
+        let mut store = EventStore::open_in_memory().unwrap();
+        let batch: Vec<_> = (1..=1025)
+            .map(|id| event(id, Kind::Exit { status: 0 }))
+            .collect();
+        assert!(matches!(store.append(&batch), Err(StoreError::Capacity(_))));
+        assert_eq!(store.high_water().unwrap(), 0);
+        assert_eq!(store.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn low_disk_admission_and_byte_budget_fail_closed() {
+        assert!(matches!(
+            EventStore::admit_space(MIN_FREE_BYTES),
+            Err(StoreError::Capacity(_))
+        ));
+        assert!(EventStore::admit_space(u64::MAX).is_ok());
+        let mut store = EventStore::open_in_memory().unwrap();
+        let mut large = event(1, Kind::Exit { status: 0 });
+        large.process.executable_path = "x".repeat(MAX_BATCH_BYTES);
+        assert!(matches!(
+            store.append(&[large]),
+            Err(StoreError::Capacity(_))
+        ));
+        assert_eq!(store.high_water().unwrap(), 0);
+        assert_eq!(store.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn disk_store_caps_pages_and_checkpoints_wal() {
+        let path = temp_db("bounded-wal");
+        let mut store = EventStore::open(&path).unwrap();
+        let pages: i64 = store
+            .conn
+            .query_row("PRAGMA max_page_count", [], |r| r.get(0))
+            .unwrap();
+        let page_size: i64 = store
+            .conn
+            .query_row("PRAGMA page_size", [], |r| r.get(0))
+            .unwrap();
+        assert!(pages * page_size <= MAX_DATABASE_BYTES as i64);
+        for id in 1..=20 {
+            store
+                .append(&[event(id, Kind::Exit { status: 0 })])
+                .unwrap();
+        }
+        store.checkpoint().unwrap();
+        assert_eq!(
+            std::fs::metadata(path.with_file_name("events.db-wal"))
+                .unwrap()
+                .len(),
+            0
+        );
+        assert!(store.verify().unwrap().is_ok());
+    }
+
+    #[test]
+    fn legacy_migration_preserves_unknown_completeness() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("v1.sql")).unwrap();
+        conn.execute("INSERT INTO meta VALUES ('schema_version', '1')", [])
+            .unwrap();
+        let mut old = event(1, Kind::Exit { status: 0 });
+        old.schema_version = 1;
+        let mut json = serde_json::to_value(old).unwrap();
+        json.as_object_mut().unwrap().remove("capture");
+        conn.execute(
+            "INSERT INTO events VALUES (1, 10, 1, 1, 1, 'synthetic', 'exit', '5:1', '1:1', ?1)",
+            [json.to_string()],
+        )
+        .unwrap();
+        let store = EventStore::init(conn).unwrap();
+        let events = store.events(1, None).unwrap();
+        assert_eq!(events[0].schema_version, 2);
+        assert_eq!(events[0].capture, None);
+        assert_eq!(store.schema_version().unwrap(), 2);
     }
 
     #[test]

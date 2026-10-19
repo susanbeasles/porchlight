@@ -160,7 +160,7 @@ fn ten_thousand_events_round_trip_byte_identical() {
         .lines()
         .collect();
     assert_eq!(lines.len(), 2);
-    assert!(lines[0].starts_with(r#"{"schema_version":1,"id":3,"#));
+    assert!(lines[0].starts_with(r#"{"schema_version":2,"id":3,"#));
 }
 
 #[test]
@@ -234,7 +234,7 @@ fn dump_contains_only_this_runs_events() {
     );
     assert_eq!(l2.len(), 4, "second dump excludes the first run's events");
     assert!(
-        l2[0].starts_with(r#"{"schema_version":1,"id":5,"#),
+        l2[0].starts_with(r#"{"schema_version":2,"id":5,"#),
         "{}",
         l2[0]
     );

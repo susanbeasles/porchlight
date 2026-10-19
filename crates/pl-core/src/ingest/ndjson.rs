@@ -84,7 +84,7 @@ pub fn parse_line(format: Format, line: &str) -> Result<Option<Event>, String> {
         Format::Porchlight => {
             let event = serde_json::from_str::<Event>(line)
                 .map_err(|e| format!("porchlight event: {e}"))?;
-            if event.schema_version != SCHEMA_VERSION {
+            if event.schema_version != 1 && event.schema_version != SCHEMA_VERSION {
                 return Err(format!(
                     "porchlight event schema_version {} (this build reads {SCHEMA_VERSION})",
                     event.schema_version
@@ -223,6 +223,7 @@ mod tests {
     fn porchlight_line(id: u64, kind: Kind) -> String {
         Event {
             schema_version: SCHEMA_VERSION,
+            capture: None,
             id,
             mach_time: MachTime(id),
             wall_time: WallTime(0),
@@ -289,7 +290,7 @@ mod tests {
     #[test]
     fn rejects_other_schema_versions() {
         let line = porchlight_line(1, Kind::Exit { status: 0 }).replacen(
-            r#""schema_version":1"#,
+            r#""schema_version":2"#,
             r#""schema_version":99"#,
             1,
         );

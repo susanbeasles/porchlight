@@ -28,6 +28,56 @@ pub const MAX_BATCH: usize = 512;
 pub const BATCH_INTERVAL: Duration = Duration::from_millis(250);
 /// Events held while the app is not connected (SPEC §4.7).
 pub const OVERFLOW_CAP: usize = 10_000;
+/// Conservative decoded allocation budget, in addition to the event-count cap.
+/// Queue backing storage is separately bounded by OVERFLOW_CAP.
+pub const OVERFLOW_BYTES: usize = 16 * 1024 * 1024;
+
+fn process_bytes(p: &ProcessIdentity) -> usize {
+    p.executable_path.capacity()
+        + p.cdhash.capacity()
+        + p.signing_id.as_ref().map_or(0, String::capacity)
+        + p.team_id.as_ref().map_or(0, String::capacity)
+        + p.tty.as_ref().map_or(0, String::capacity)
+}
+
+/// Account capacities, not serialized lengths (empty argv still owns String slots).
+/// This native bridge emits only exec/fork/exit/drop. Fail closed for new kinds until
+/// their owned allocations are accounted for here. No candidate code is executed.
+fn event_bytes(event: &Event) -> usize {
+    let base = std::mem::size_of::<Event>() + process_bytes(&event.process);
+    let owned = match &event.kind {
+        Kind::Exec {
+            target,
+            args,
+            env,
+            cwd,
+            script_path,
+        } => {
+            // A deliberately generous per-entry allowance covers BTreeMap node
+            // slots, edges and partially occupied nodes on supported 64-bit hosts.
+            let map_nodes = if env.is_empty() {
+                0
+            } else {
+                (env.len() + 1) * 2048
+            };
+            std::mem::size_of::<ProcessIdentity>()
+                + process_bytes(target)
+                + args.capacity() * std::mem::size_of::<String>()
+                + args.iter().map(String::capacity).sum::<usize>()
+                + map_nodes
+                + env
+                    .iter()
+                    .map(|(k, v)| k.capacity() + v.capacity())
+                    .sum::<usize>()
+                + cwd.as_ref().map_or(0, String::capacity)
+                + script_path.as_ref().map_or(0, String::capacity)
+        }
+        Kind::Drop { event_type, .. } => event_type.capacity(),
+        Kind::Fork { .. } | Kind::Exit { .. } => 0,
+        _ => return usize::MAX,
+    };
+    base.saturating_add(owned)
+}
 
 /// Per-type expected next `seq_num`.
 #[derive(Debug, Clone)]
@@ -82,6 +132,7 @@ pub fn drop_event(
 ) -> Event {
     Event {
         schema_version: SCHEMA_VERSION,
+        capture: None,
         id: 0,
         mach_time: at.0,
         wall_time: at.1,
@@ -240,8 +291,10 @@ pub struct Outbox {
     identity: ProcessIdentity,
     connected: bool,
     queue: VecDeque<Event>,
+    queued_bytes: usize,
     dropped: u64,
     dropped_total: u64,
+    ownership_dropped: u64,
     last_at: (MachTime, WallTime),
 }
 
@@ -251,8 +304,10 @@ impl Outbox {
             identity,
             connected: false,
             queue: VecDeque::new(),
+            queued_bytes: 0,
             dropped: 0,
             dropped_total: 0,
+            ownership_dropped: 0,
             last_at: (MachTime(0), WallTime(0)),
         }
     }
@@ -265,6 +320,10 @@ impl Outbox {
         self.queue.len()
     }
 
+    pub fn queued_bytes(&self) -> usize {
+        self.queued_bytes
+    }
+
     pub fn dropped_total(&self) -> u64 {
         self.dropped_total
     }
@@ -274,18 +333,42 @@ impl Outbox {
         if let Some(last) = batch.last() {
             self.last_at = (last.mach_time, last.wall_time);
         }
-        if self.connected && self.queue.is_empty() && self.dropped == 0 {
+        if self.connected
+            && self.queue.is_empty()
+            && self.dropped == 0
+            && self.ownership_dropped == 0
+        {
             return Some(batch);
         }
         for ev in batch {
-            if self.queue.len() >= OVERFLOW_CAP {
-                self.queue.pop_front();
+            let bytes = event_bytes(&ev);
+            if bytes > OVERFLOW_BYTES {
                 self.dropped += 1;
                 self.dropped_total += 1;
+                continue;
             }
+            while self.queue.len() >= OVERFLOW_CAP || self.queued_bytes > OVERFLOW_BYTES - bytes {
+                if let Some(oldest) = self.queue.pop_front() {
+                    self.queued_bytes -= event_bytes(&oldest);
+                    self.dropped += 1;
+                    self.dropped_total += 1;
+                }
+            }
+            self.queued_bytes += bytes;
             self.queue.push_back(ev);
         }
         None
+    }
+
+    /// Revoke queued payloads rather than transferring them to another principal.
+    /// The next authorized stream receives an explicit ownership-transition loss marker.
+    pub fn discard_for_owner_change(&mut self) {
+        let count = self.queue.len() as u64;
+        self.ownership_dropped = self.ownership_dropped.saturating_add(count);
+        self.dropped_total = self.dropped_total.saturating_add(count);
+        self.queue.clear();
+        self.queued_bytes = 0;
+        self.connected = false;
     }
 
     pub fn set_connected(&mut self, connected: bool) {
@@ -311,7 +394,20 @@ impl Outbox {
             ));
             self.dropped = 0;
         }
+        if self.ownership_dropped > 0 {
+            events.push(drop_event(
+                &self.identity,
+                "ownership_transition",
+                0,
+                0,
+                self.ownership_dropped,
+                DropReason::AppDisconnected,
+                self.last_at,
+            ));
+            self.ownership_dropped = 0;
+        }
         events.extend(self.queue.drain(..));
+        self.queued_bytes = 0;
         let mut out = Vec::new();
         while !events.is_empty() {
             let rest = events.split_off(events.len().min(MAX_BATCH));
@@ -515,6 +611,23 @@ mod tests {
     }
 
     #[test]
+    fn changing_owner_discards_payload_and_emits_explicit_loss() {
+        let mut outbox = Outbox::new(me());
+        assert!(outbox.offer(batch_of(3)).is_none());
+        assert_eq!(outbox.queued(), 3);
+        outbox.discard_for_owner_change();
+        assert_eq!(outbox.queued(), 0);
+        assert_eq!(outbox.queued_bytes(), 0);
+        assert_eq!(outbox.dropped_total(), 3);
+        outbox.set_connected(true);
+        let batches = outbox.drain();
+        assert_eq!(batches.iter().map(Vec::len).sum::<usize>(), 1);
+        assert!(matches!(&batches[0][0].kind,
+            Kind::Drop { event_type, count: 3, .. } if event_type == "ownership_transition"));
+        assert!(outbox.drain().is_empty());
+    }
+
+    #[test]
     fn outbox_passes_through_when_connected() {
         let mut o = Outbox::new(me());
         o.set_connected(true);
@@ -548,5 +661,74 @@ mod tests {
             Some(1),
             "back to pass-through"
         );
+    }
+
+    #[test]
+    fn outbox_limits_decoded_memory_before_event_count_limit() {
+        let mut outbox = Outbox::new(me());
+        for seq in 0..64 {
+            let mut event = decode(&exec(seq, &[""], &[])).unwrap();
+            if let Kind::Exec { args, .. } = &mut event.kind {
+                // Empty strings allocate no content, but the String headers alone
+                // consume 384 KiB per event on a 64-bit target.
+                *args = vec![String::new(); 16_384];
+            }
+            outbox.offer(vec![event]);
+        }
+        let retained_argument_headers: usize = outbox
+            .queue
+            .iter()
+            .map(|event| match &event.kind {
+                Kind::Exec { args, .. } => args.capacity() * std::mem::size_of::<String>(),
+                _ => 0,
+            })
+            .sum();
+        assert!(
+            retained_argument_headers <= 16 * 1024 * 1024,
+            "argument headers alone exceed the proposed 16 MiB outbox budget"
+        );
+        assert!(
+            outbox.dropped_total() > 0,
+            "memory eviction must be observable"
+        );
+        assert!(outbox.queued_bytes() <= OVERFLOW_BYTES);
+        outbox.set_connected(true);
+        let batches = outbox.drain();
+        assert!(batches.iter().all(|batch| batch.len() <= MAX_BATCH));
+        assert_eq!(outbox.queued(), 0);
+        assert_eq!(outbox.queued_bytes(), 0);
+        assert!(matches!(batches[0][0].kind, Kind::Drop { .. }));
+    }
+
+    #[test]
+    fn oversize_event_drops_without_evicting_retained_events() {
+        let mut outbox = Outbox::new(me());
+        outbox.offer(batch_of(2));
+        let retained = outbox.queued_bytes();
+        let mut event = decode(&exec(7, &[""], &[])).unwrap();
+        if let Kind::Exec { target, .. } = &mut event.kind {
+            target.executable_path = String::with_capacity(OVERFLOW_BYTES + 1);
+        }
+        outbox.offer(vec![event]);
+        assert_eq!(outbox.queued(), 2);
+        assert_eq!(outbox.queued_bytes(), retained);
+        assert_eq!(outbox.dropped_total(), 1);
+        outbox.set_connected(true);
+        let drained: Vec<Event> = outbox.drain().into_iter().flatten().collect();
+        assert!(matches!(drained[0].kind, Kind::Drop { count: 1, .. }));
+        assert_eq!(drained.len(), 3);
+        assert_eq!(outbox.queued_bytes(), 0);
+        outbox.set_connected(false);
+        outbox.offer(batch_of(2));
+        assert_eq!(outbox.queued_bytes(), retained);
+    }
+
+    #[test]
+    fn entry_budget_rejection_is_visible_in_bridge_stats() {
+        let mut bridge = Bridge::new(me());
+        let event = exec(1, &vec![""; 16_384], &[]);
+        bridge.accept(&[*event], &[0; PL_EV_SLOTS], Instant::now());
+        assert_eq!(bridge.stats().decode_errors, 1);
+        assert!(bridge.take_all().is_empty());
     }
 }

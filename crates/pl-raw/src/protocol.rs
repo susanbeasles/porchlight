@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: i64 = 1;
+pub const PROTOCOL_VERSION: i64 = 2;
 
 /// Mach service published by the extension. System extensions must prefix the name with
 /// the Team ID (`NSEndpointSecurityMachServiceName`); ADR-0005.
@@ -151,7 +151,7 @@ mod tests {
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(
-            json.starts_with(r#"{"protocol_version":1,"state":"not_permitted","streaming":false"#),
+            json.starts_with(r#"{"protocol_version":2,"state":"not_permitted","streaming":false"#),
             "{json}"
         );
         assert_eq!(serde_json::from_str::<EsStatus>(&json).unwrap(), s);
