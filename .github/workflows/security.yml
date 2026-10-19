@@ -19,13 +19,13 @@ permissions: {}
 
 jobs:
   security:
-    uses: susanbeasles/workflow_depot/.github/workflows/security-assurance.yml@f9fa65b94fe0f2fdc068c19eaccb33ae6a78a70f
+    uses: susanbeasles/workflow_depot/.github/workflows/security-assurance.yml@d6809c98f8c3634fe0fd0970b2ab1024d886f2e8
     permissions:
       contents: read
       id-token: write          # evidence-sign job only (job-level in the reusable workflow)
     with:
       depot_repository: susanbeasles/workflow_depot
-      depot_ref: f9fa65b94fe0f2fdc068c19eaccb33ae6a78a70f   # must equal the SHA in `uses:`
+      depot_ref: d6809c98f8c3634fe0fd0970b2ab1024d886f2e8   # must equal the SHA in `uses:`
       policy_profile: ci-baseline
       # Compiled-language CodeQL needs a build; without one SAST-CODEQL for Rust is unavailable.
       # Executes this repository's own code on a GitHub-hosted runner.
@@ -35,8 +35,5 @@ jobs:
       ai_review_enabled: true
       ai_review_approval_ref: "owner-approved 2026-10-15: public repository"
       ai_review_model: claude-sonnet-5-5
-      # Swift CodeQL needs a macOS runner; the Swift app is a thin AppKit/SystemExtensions shell.
-      # Semgrep (p/swift) and SwiftLint still gate it; Rust, C and Actions CodeQL still run.
-      codeql_waive_languages: swift
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
