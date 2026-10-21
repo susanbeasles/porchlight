@@ -1,6 +1,89 @@
 #include "xpc_shim.h"
 
 #include <xpc/xpc.h>
+#include <SystemConfiguration/SystemConfiguration.h>
+#include <Security/AuthSession.h>
+#include <bsm/audit.h>
+#include <unistd.h>
+
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <string.h>
+
+/* Public owner enrollment is provisioned independently by the installer/operator.
+ * This library never creates it; missing/unsafe enrollment disables listening. */
+static uid_t telemetry_owner = (uid_t)-1;
+
+static int load_telemetry_owner(void) {
+    telemetry_owner = (uid_t)-1;
+    struct stat st;
+    const char *parents[] = {"/Library", "/Library/Preferences"};
+    for (size_t i = 0; i < sizeof(parents) / sizeof(parents[0]); i++) {
+        if (lstat(parents[i], &st) != 0 || !S_ISDIR(st.st_mode) ||
+            st.st_uid != 0 || (st.st_mode & 0022) != 0) {
+            return -1;
+        }
+    }
+    int fd = open("/Library/Preferences/dev.susanb.porchlight.owner-uid",
+                  O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) {
+        return -1;
+    }
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != 0 ||
+        (st.st_mode & 0022) != 0 || st.st_nlink != 1 || st.st_size < 1 || st.st_size > 16) {
+        close(fd);
+        return -1;
+    }
+    char text[18] = {0};
+    ssize_t n = read(fd, text, sizeof(text) - 1);
+    close(fd);
+    if (n != st.st_size || strlen(text) != (size_t)n || text[0] < '0' || text[0] > '9') {
+        return -1;
+    }
+    char *end;
+    errno = 0;
+    unsigned long owner = strtoul(text, &end, 10);
+    if (errno != 0 || owner == 0 || owner >= (unsigned long)(uid_t)-1 ||
+        !(*end == '\0' || (*end == '\n' && end[1] == '\0'))) {
+        return -1;
+    }
+    telemetry_owner = (uid_t)owner;
+    return 0;
+}
+
+
+static int enrolled_owner_matches(uint32_t uid) {
+    return telemetry_owner != (uid_t)-1 && uid == telemetry_owner;
+}
+
+/* System policy: only the current local graphical console principal may consume.
+ * UID and audit session come from libxpc/kernel state, never the message dictionary.
+ * Rechecked on every command and delivery; errors revoke access. */
+int pl_xpc_principal_is_current(uint32_t uid, uint32_t asid) {
+    uid_t console_uid = (uid_t)-1;
+    gid_t console_gid = (gid_t)-1;
+    CFStringRef user = SCDynamicStoreCopyConsoleUser(NULL, &console_uid, &console_gid);
+    if (user == NULL) return 0;
+    CFRelease(user);
+    if (!enrolled_owner_matches(uid) || uid == 0 || uid == (uint32_t)-1 || console_uid != uid || asid == 0 || asid == (uint32_t)-1) return 0;
+    auditinfo_addr_t info = {0};
+    info.ai_asid = (au_asid_t)asid;
+    if (auditon(A_GETSINFO_ADDR, &info, sizeof(info)) != 0 || info.ai_auid != uid) return 0;
+    SecuritySessionId session = 0;
+    SessionAttributeBits attributes = 0;
+    if (SessionGetInfo((SecuritySessionId)asid, &session, &attributes) != errSessionSuccess) return 0;
+    return session == asid && (attributes & sessionHasGraphicAccess) != 0 && (attributes & sessionIsRemote) == 0;
+}
+
+int pl_xpc_authorized_principal(void *peer, uint32_t *uid, uint32_t *asid) {
+    xpc_connection_t conn = (xpc_connection_t)peer;
+    *uid = (uint32_t)xpc_connection_get_euid(conn);
+    *asid = (uint32_t)xpc_connection_get_asid(conn);
+    return pl_xpc_principal_is_current(*uid, *asid);
+}
+
 
 static void deliver(xpc_connection_t conn, xpc_object_t obj, void *ctx, pl_xpc_msg_fn on_msg,
                     pl_xpc_peer_fn on_peer, int owns_internal_ref) {
@@ -27,6 +110,7 @@ static void deliver(xpc_connection_t conn, xpc_object_t obj, void *ctx, pl_xpc_m
 
 int pl_xpc_listen(const char *service, const char *peer_requirement, void *ctx,
                   pl_xpc_msg_fn on_msg, pl_xpc_peer_fn on_peer) {
+    if (load_telemetry_owner() != 0) return -1;
     xpc_connection_t listener =
         xpc_connection_create_mach_service(service, NULL, XPC_CONNECTION_MACH_SERVICE_LISTENER);
     if (listener == NULL) {

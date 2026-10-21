@@ -6,9 +6,15 @@ use std::sync::Mutex;
 use pl_core::schema::{Event, ProcessIdentity};
 use pl_raw::bridge::{BridgeStats, Outbox};
 use pl_raw::protocol::{EsState, EsStatus, Op, PROTOCOL_VERSION, key};
-use pl_xpc::{ConnId, Connection, Handler, Msg, PeerEvent};
+#[cfg(target_os = "macos")]
+use pl_xpc::{ConnId, Connection, Handler, Msg, PeerEvent, Principal};
 
+#[cfg(target_os = "macos")]
 use crate::mac::log;
+#[cfg(all(test, not(target_os = "macos")))]
+use crate::test_xpc::{ConnId, Connection, Handler, Msg, PeerEvent, Principal};
+#[cfg(all(test, not(target_os = "macos")))]
+fn log(_: i32, _: &str) {}
 
 struct Peer {
     conn: Connection,
@@ -18,6 +24,7 @@ struct Peer {
 struct State {
     peers: BTreeMap<ConnId, Peer>,
     outbox: Outbox,
+    owner: Option<Principal>,
     es_state: EsState,
     bridge: BridgeStats,
     ring_capacity: u32,
@@ -34,6 +41,7 @@ impl Service {
             state: Mutex::new(State {
                 peers: BTreeMap::new(),
                 outbox: Outbox::new(identity),
+                owner: None,
                 es_state: EsState::Starting,
                 bridge: BridgeStats::default(),
                 ring_capacity,
@@ -62,12 +70,38 @@ impl Service {
     /// Hands a batch from the bridge to connected streaming peers, or queues it.
     pub fn deliver(&self, batch: Vec<Event>) {
         let mut st = self.lock();
+        Self::reauthorize(&mut st);
+        if st.owner.is_none() {
+            let _ = st.outbox.offer(batch);
+            st.outbox.discard_for_owner_change();
+            return;
+        }
         if let Some(batch) = st.outbox.offer(batch) {
             send_batch(&st, &batch);
         }
     }
 
+    fn reauthorize(st: &mut State) {
+        st.peers.retain(|_, peer| {
+            let allowed = peer
+                .conn
+                .authorized_principal()
+                .is_some_and(|p| Some(p) == st.owner);
+            if !allowed {
+                peer.conn.cancel();
+            }
+            allowed
+        });
+        if st.owner.is_some_and(|p| !p.is_current()) {
+            st.owner = None;
+            st.outbox.discard_for_owner_change();
+        }
+        st.outbox
+            .set_connected(st.peers.values().any(|p| p.streaming));
+    }
+
     fn sync_connected(st: &mut State) {
+        Self::reauthorize(st);
         let connected = st.peers.values().any(|p| p.streaming);
         st.outbox.set_connected(connected);
         if connected {
@@ -95,6 +129,12 @@ fn status_json(st: &State) -> Vec<u8> {
 }
 
 fn send_status(st: &State, conn: &Connection) {
+    if conn
+        .authorized_principal()
+        .is_none_or(|p| Some(p) != st.owner)
+    {
+        return;
+    }
     let json = status_json(st);
     conn.send(
         PROTOCOL_VERSION,
@@ -116,7 +156,12 @@ fn send_batch(st: &State, batch: &[Event]) {
         return;
     };
     // Only peers that asked to stream receive events.
-    for peer in st.peers.values().filter(|p| p.streaming) {
+    for peer in st.peers.values().filter(|p| {
+        p.streaming
+            && p.conn
+                .authorized_principal()
+                .is_some_and(|owner| Some(owner) == st.owner)
+    }) {
         peer.conn.send(
             PROTOCOL_VERSION,
             Op::Batch.as_str(),
@@ -136,6 +181,10 @@ impl Handler for Service {
             return;
         }
         let mut st = self.lock();
+        Self::reauthorize(&mut st);
+        if !st.peers.contains_key(&conn) {
+            return;
+        }
         match Op::parse(op) {
             Some(Op::Status) => {
                 if let Some(p) = st.peers.get(&conn) {
@@ -173,6 +222,21 @@ impl Handler for Service {
         let mut st = self.lock();
         match event {
             PeerEvent::Connected(conn) => {
+                Self::reauthorize(&mut st);
+                let Some(principal) = conn.authorized_principal() else {
+                    conn.cancel();
+                    return;
+                };
+                // Single consumer, bound to an authorized principal. A second app instance
+                // cannot consume another connection's backlog.
+                if !st.peers.is_empty() {
+                    conn.cancel();
+                    return;
+                }
+                if st.owner != Some(principal) {
+                    st.outbox.discard_for_owner_change();
+                    st.owner = Some(principal);
+                }
                 st.peers.insert(
                     conn.id(),
                     Peer {

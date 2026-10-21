@@ -33,6 +33,9 @@ pub struct LiveProcess {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
 pub struct LiveStats {
+    /// Incomplete observations cannot support negative evidence about missing fields.
+    pub incomplete_events: u64,
+    pub completeness_unknown: u64,
     pub forks: u64,
     pub execs: u64,
     /// `exec` where the post-exec token differs from the acting token (SPEC §12).
@@ -55,6 +58,16 @@ impl LiveProcesses {
     }
 
     pub fn apply(&mut self, event: &Event) {
+        match event.capture {
+            Some(capture) if capture.truncated => {
+                self.stats.incomplete_events += 1;
+                // Keep the raw observation in storage, but do not replace a known
+                // live identity with partially captured evidence.
+                return;
+            }
+            None => self.stats.completeness_unknown += 1,
+            _ => {}
+        }
         match &event.kind {
             Kind::Fork { child } => {
                 self.stats.forks += 1;
@@ -276,6 +289,7 @@ mod tests {
         process.token = actor;
         Event {
             schema_version: SCHEMA_VERSION,
+            capture: None,
             id,
             mach_time: MachTime(id),
             wall_time: WallTime(0),
@@ -301,6 +315,28 @@ mod tests {
                 script_path: None,
             },
         )
+    }
+
+    #[test]
+    fn incomplete_observation_does_not_replace_known_live_identity() {
+        let mut live = LiveProcesses::new();
+        live.apply(&exec_into(1, tok(200, 1), tok(200, 2), "/trusted/path"));
+        let mut partial = exec_into(2, tok(200, 2), tok(200, 2), "/cut");
+        partial.capture = Some(crate::schema::CaptureCompleteness {
+            raw_version: 1,
+            process_flags: 0,
+            target_flags: Some(16),
+            exec_flags: Some(0),
+            args_retained: Some(0),
+            env_retained: Some(0),
+            truncated: true,
+        });
+        live.apply(&partial);
+        assert_eq!(
+            live.iter().next().unwrap().1.executable_path,
+            "/trusted/path"
+        );
+        assert_eq!(live.stats().incomplete_events, 1);
     }
 
     #[test]

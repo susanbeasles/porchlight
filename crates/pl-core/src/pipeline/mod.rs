@@ -97,6 +97,7 @@ mod tests {
     fn unassigned(kind: Kind) -> Event {
         Event {
             schema_version: 0,
+            capture: None,
             id: 0,
             mach_time: MachTime(1),
             wall_time: WallTime(1),

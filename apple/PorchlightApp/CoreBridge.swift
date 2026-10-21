@@ -26,6 +26,8 @@ struct ExtensionStatus: Decodable {
 }
 
 struct LiveStats: Decodable {
+    let incompleteEvents: UInt64
+    let completenessUnknown: UInt64
     let forks: UInt64
     let execs: UInt64
     let execPidversionChanged: UInt64
@@ -55,6 +57,7 @@ struct AppStats: Decodable {
     let extensionStatus: ExtensionStatus?
     let eventsIngested: UInt64
     let highWater: UInt64
+    let retentionEvicted: UInt64?
     let liveProcesses: Int
     let live: LiveStats
     let drops: DropTotals
@@ -66,7 +69,7 @@ struct AppStats: Decodable {
     enum CodingKeys: String, CodingKey {
         case connected
         case extensionStatus = "extension"
-        case eventsIngested, highWater, liveProcesses, live, drops, endToEnd, batches, ingestErrors
+        case eventsIngested, highWater, retentionEvicted, liveProcesses, live, drops, endToEnd, batches, ingestErrors
         case lastError
     }
 }

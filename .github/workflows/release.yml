@@ -8,7 +8,8 @@
 #
 # Each job gets only the authority its step needs: the job that runs third-party build code
 # can neither sign, write the repository, nor publish. The tarball is built once and its
-# sha256 is checked at every handoff.
+# sha256 is checked at every handoff. Independent expected bytes, source tree and lockfile
+# are additionally required in the reviewed release/npm.json before activation and signing.
 name: release
 
 on:
@@ -97,6 +98,11 @@ jobs:
           dir: ${{ runner.temp }}/sealed
           tarball: ${{ needs.build.outputs.tarball }}
           sha256: ${{ needs.build.outputs.sha256 }}
+      - name: Verify independently reviewed artifact identity
+        env:
+          DIR: ${{ runner.temp }}/sealed
+          TARBALL: ${{ needs.build.outputs.tarball }}
+        run: node actions/release-gate/identity.mjs verify
       - uses: ./actions/cosign-attest
         with:
           subjects: ${{ runner.temp }}/sealed/${{ needs.build.outputs.tarball }}

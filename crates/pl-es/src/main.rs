@@ -8,8 +8,10 @@
 
 #[cfg(target_os = "macos")]
 mod mac;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 mod service;
+#[cfg(all(test, not(target_os = "macos")))]
+mod test_xpc;
 
 #[cfg(target_os = "macos")]
 fn main() {

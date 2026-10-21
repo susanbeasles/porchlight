@@ -431,6 +431,12 @@ def main():
         events = load_session(sid, POL["chain_window_sec"])
         cur = compact(tool, inp)
         verdict, risk, cum, reasons, chain_hits = decide(tool, inp, events, cur)
+        if verdict == "allow":
+            # Both public hook interfaces enforce the same deterministic path policy.
+            # Keep supervisor HALT/deny decisions and session evidence unchanged.
+            import guard
+            guard.CWD = CWD
+            guard.pre(tool, inp)
         cur.update(risk=risk, verdict=verdict, reasons=reasons)
         append_session(sid, cur)
         log("verdict", session=sid, tool=tool, verdict=verdict, risk=risk, cum=round(cum, 2), reasons=reasons,

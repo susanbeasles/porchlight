@@ -19,3 +19,10 @@ pub use mac::{
     ConnId, Connection, Handler, HandlerRef, Msg, PeerEvent, Requirement, listen, open_client,
     register,
 };
+
+/// Kernel-authenticated local user and audit session. Never deserialize from XPC input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Principal {
+    pub uid: u32,
+    pub asid: u32,
+}

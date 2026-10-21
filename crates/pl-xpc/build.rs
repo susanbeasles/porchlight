@@ -13,6 +13,9 @@ fn main() {
         println!("cargo:warning=pl-xpc: shim not compiled for {target} on {host} (check only)");
         return;
     }
+    println!("cargo:rustc-link-lib=framework=SystemConfiguration");
+    println!("cargo:rustc-link-lib=framework=Security");
+    println!("cargo:rustc-link-lib=bsm");
     cc::Build::new()
         .std("c11")
         .flag("-fblocks")

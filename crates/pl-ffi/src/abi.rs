@@ -178,6 +178,7 @@ mod tests {
     fn ev_g(actor: ProcessIdentity, kind: Kind, global: u64) -> Event {
         Event {
             schema_version: SCHEMA_VERSION,
+            capture: None,
             id: 0,
             mach_time: MachTime(1),
             wall_time: WallTime(1),

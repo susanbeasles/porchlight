@@ -8,11 +8,11 @@ pub mod identity;
 pub mod kind;
 pub mod time;
 
-pub use event::{Event, Source};
+pub use event::{CaptureCompleteness, Event, Source};
 pub use finding::{Action, Finding, FindingId, Severity, State};
 pub use identity::{AuditToken, ProcessIdentity};
 pub use kind::{CrossViewKind, DropReason, Kind, LaunchItem, ProfileInfo, TccUpdate};
 pub use time::{MachTime, WallTime};
 
 /// Current schema version. Bump on any change to serialized shape; add a store migration.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;

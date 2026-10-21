@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use pl_core::schema::{
-    AuditToken, Event, Kind, MachTime, ProcessIdentity, SCHEMA_VERSION, Source, WallTime,
+    AuditToken, CaptureCompleteness, Event, Kind, MachTime, ProcessIdentity, SCHEMA_VERSION,
+    Source, WallTime,
 };
 
 use crate::raw::{
@@ -13,16 +14,24 @@ use crate::raw::{
     get_cstr,
 };
 
+/// Bound owned entry overhead independently of the native byte-buffer cap.
+/// Bridge counts rejected records as decode errors; no silent truncation.
+pub const MAX_EXEC_ENTRIES: u32 = 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodeError {
     Version(u32),
     UnknownType(u32),
     ExecBuffer { args_len: u32, env_len: u32 },
+    ExecEntries { argc: u32, envc: u32 },
 }
 
 impl fmt::Display for DecodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            DecodeError::ExecEntries { argc, envc } => {
+                write!(f, "exec entry budget exceeded: args {argc}, env {envc}")
+            }
             DecodeError::Version(v) => {
                 write!(f, "raw event version {v}, expected {PL_RAW_VERSION}")
             }
@@ -110,8 +119,8 @@ fn split_nul(bytes: &[u8], limit: u32) -> Vec<String> {
         .collect()
 }
 
-/// True when any string or the exec buffer was cut short. The v1 schema has no truncation
-/// field, so the bridge counts these instead (`BridgeStats::truncated`).
+/// True when any string or the exec buffer was cut short. Preserved per event and
+/// counted by the bridge as an operational statistic.
 pub fn is_truncated(raw: &PlRawEvent) -> bool {
     let mut t = raw.process.flags & flags::PROCESS_TRUNC_MASK != 0;
     if raw.event_type == PL_EV_EXEC {
@@ -129,6 +138,12 @@ pub fn decode(raw: &PlRawEvent) -> Result<Event, DecodeError> {
     let kind = match raw.event_type {
         PL_EV_EXEC => {
             let x = raw.exec();
+            if x.argc > MAX_EXEC_ENTRIES || x.envc > MAX_EXEC_ENTRIES - x.argc {
+                return Err(DecodeError::ExecEntries {
+                    argc: x.argc,
+                    envc: x.envc,
+                });
+            }
             let args_end = x.args_len as usize;
             let env_end = args_end + x.env_len as usize;
             if env_end > x.buf.len() {
@@ -175,6 +190,15 @@ pub fn decode(raw: &PlRawEvent) -> Result<Event, DecodeError> {
     };
     Ok(Event {
         schema_version: SCHEMA_VERSION,
+        capture: Some(CaptureCompleteness {
+            raw_version: raw.version,
+            process_flags: raw.process.flags,
+            target_flags: (raw.event_type == PL_EV_EXEC).then(|| raw.exec().target.flags),
+            exec_flags: (raw.event_type == PL_EV_EXEC).then(|| raw.exec().flags),
+            args_retained: (raw.event_type == PL_EV_EXEC).then(|| raw.exec().argc),
+            env_retained: (raw.event_type == PL_EV_EXEC).then(|| raw.exec().envc),
+            truncated: is_truncated(raw),
+        }),
         id: 0,
         mach_time: MachTime(raw.mach_time),
         wall_time: WallTime(
@@ -254,6 +278,40 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::*;
     use super::*;
+
+    #[test]
+    fn completeness_survives_ipc_database_and_export_for_exact_event() {
+        let mut raw = exec(1, &["retained"], &["A=B"]);
+        raw.process.flags |= flags::PATH_TRUNC;
+        raw.exec_mut().flags |= flags::ARGS_TRUNC | flags::ENV_TRUNC;
+        raw.exec_mut().target.flags |= flags::SIGNING_ID_TRUNC;
+        let incomplete = decode(&raw).unwrap();
+        let complete = decode(&exec(2, &["whole"], &[])).unwrap();
+        let batch: Vec<Event> = serde_json::from_slice(
+            &serde_json::to_vec(&vec![incomplete.clone(), complete]).unwrap(),
+        )
+        .unwrap();
+        let mut pipeline =
+            pl_core::pipeline::Pipeline::new(pl_core::store::EventStore::open_in_memory().unwrap())
+                .unwrap();
+        pipeline.ingest(batch).unwrap();
+        let events = pipeline.store().events(1, None).unwrap();
+        assert_eq!(events[0].capture, incomplete.capture);
+        let c = events[0].capture.unwrap();
+        assert!(c.truncated);
+        assert_eq!(c.args_retained, Some(1));
+        assert_eq!(c.env_retained, Some(1));
+        assert!(c.target_flags.unwrap() & flags::SIGNING_ID_TRUNC != 0);
+        assert!(!events[1].capture.unwrap().truncated);
+        let exported: Event = serde_json::from_str(&events[0].to_json_line().unwrap()).unwrap();
+        assert_eq!(exported.capture, Some(c));
+        let mut live = pl_core::live::LiveProcesses::new();
+        for event in &events {
+            live.apply(event);
+        }
+        assert_eq!(live.stats().incomplete_events, 1);
+        assert_eq!(live.stats().completeness_unknown, 0);
+    }
 
     #[test]
     fn decodes_exec_with_args_env_and_identity() {
@@ -336,6 +394,40 @@ mod tests {
         assert!(matches!(
             decode(&e).unwrap_err(),
             DecodeError::ExecBuffer { .. }
+        ));
+    }
+
+    #[test]
+    fn rejects_fragmented_exec_before_allocating_thousands_of_strings() {
+        let args = vec![""; 16_384];
+        let event = exec(1, &args, &[]);
+        assert!(
+            decode(&event).is_err(),
+            "a compact record must not allocate thousands of owned argument entries"
+        );
+        let env = vec![""; 16_384];
+        let event = exec(2, &[], &env);
+        assert!(
+            decode(&event).is_err(),
+            "environment entries need the same pre-allocation bound"
+        );
+    }
+
+    #[test]
+    fn exec_entry_limit_is_combined_and_accepts_the_boundary() {
+        let args = vec![""; MAX_EXEC_ENTRIES as usize / 2];
+        let env = vec![""; MAX_EXEC_ENTRIES as usize / 2];
+        assert!(decode(&exec(1, &args, &env)).is_ok());
+        let mut event = exec(2, &args, &env);
+        event.exec_mut().envc += 1;
+        assert!(matches!(
+            decode(&event),
+            Err(DecodeError::ExecEntries { .. })
+        ));
+        event.exec_mut().argc = u32::MAX;
+        assert!(matches!(
+            decode(&event),
+            Err(DecodeError::ExecEntries { .. })
         ));
     }
 }

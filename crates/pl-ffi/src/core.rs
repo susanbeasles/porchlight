@@ -41,6 +41,7 @@ pub struct AppStats {
     pub extension: Option<EsStatus>,
     pub events_ingested: u64,
     pub high_water: u64,
+    pub retention_evicted: Option<u64>,
     pub live_processes: usize,
     pub live: LiveStats,
     pub drops: DropTotals,
@@ -155,6 +156,7 @@ impl AppCore {
 
     pub fn stats(&self) -> AppStats {
         let mut s = self.stats.clone();
+        s.retention_evicted = self.pipeline.store().retention_floor().ok();
         s.live_processes = self.live.len();
         s.live = self.live.stats().clone();
         s

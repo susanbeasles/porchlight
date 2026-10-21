@@ -39,6 +39,8 @@ int64_t pl_xpc_msg_int(void *msg, const char *key);
 size_t pl_xpc_msg_array_count(void *msg, const char *key);
 const char *pl_xpc_msg_array_string(void *msg, const char *key, size_t index);
 
+int pl_xpc_authorized_principal(void *peer, uint32_t *uid, uint32_t *asid);
+int pl_xpc_principal_is_current(uint32_t uid, uint32_t asid);
 void pl_xpc_cancel(void *conn);
 void pl_xpc_release(void *conn);
 
